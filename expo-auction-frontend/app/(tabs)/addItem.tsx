@@ -144,13 +144,11 @@ export default function AddItemScreen() {
     <KeyboardAvoidingView
       style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      keyboardVerticalOffset={Platform.OS === 'ios' ? 64 : 0}
-    >
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 64 : 0}>
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
-        keyboardShouldPersistTaps="handled"
-      >
+        keyboardShouldPersistTaps="handled">
         <Text style={styles.title}>Add Auction Item</Text>
 
         {!accessToken ? (
@@ -191,7 +189,7 @@ export default function AddItemScreen() {
         {generating ? (
           <View style={styles.generateLoadingRow}>
             <ActivityIndicator />
-            <Text style={styles.generateLoadingText}>Generating description…</Text>
+            <Text style={styles.generateLoadingText}>Generating description...</Text>
           </View>
         ) : (
           <>
@@ -301,4 +299,3 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
 });
-

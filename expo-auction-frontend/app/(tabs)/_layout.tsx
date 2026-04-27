@@ -33,12 +33,6 @@ export default function TabLayout() {
           href: null,
         }}
       />
-      <Tabs.Screen
-        name="itemCheckout/[itemId]"
-        options={{
-          href: null,
-        }}
-      />
     </Tabs>
   );
 }

@@ -1,6 +1,5 @@
-import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
+import { createAsyncThunk, createSlice } from '@reduxjs/toolkit';
 
-import { MOCK_AUCTION_ITEMS } from '@/constants/auctionItems';
 import type { AuctionItem } from '@/constants/auctionItems';
 import { DJANGO_API_BASE } from '@/services/djangoApi';
 import { authHeaders } from '@/state/slices/authSlice';
@@ -14,7 +13,7 @@ export type AuctionItemsState = {
 };
 
 const initialState: AuctionItemsState = {
-  items: MOCK_AUCTION_ITEMS,
+  items: [],
   loading: false,
   error: null,
   generateDescriptionLoading: false,
@@ -30,8 +29,8 @@ type RootWithAuth = {
 function toNumber(value: unknown): number | null {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value === 'string' && value.trim() !== '') {
-    const n = Number(value);
-    return Number.isFinite(n) ? n : null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
   }
   return null;
 }
@@ -60,9 +59,9 @@ export const fetchAuctionItems = createAsyncThunk<AuctionItem[], void, { rejectV
     try {
       const res = await fetch(`${API_BASE}/auctionItem/`);
       if (!res.ok) {
-        const text = await res.text();
-        return rejectWithValue(text || `HTTP ${res.status}`);
+        return rejectWithValue(await readErrorMessage(res));
       }
+
       const data = (await res.json()) as unknown;
       if (!Array.isArray(data)) {
         return rejectWithValue('Invalid items response from API.');
@@ -99,6 +98,7 @@ export const createAuctionItem = createAsyncThunk<
     if (!token) {
       return rejectWithValue('You must be signed in to add an item.');
     }
+
     const res = await fetch(`${API_BASE}/auctionItem/`, {
       method: 'POST',
       headers: {
@@ -111,10 +111,11 @@ export const createAuctionItem = createAsyncThunk<
         image_url: payload.image_url ?? null,
       }),
     });
+
     if (!res.ok) {
-      const text = await res.text();
-      return rejectWithValue(text || `HTTP ${res.status}`);
+      return rejectWithValue(await readErrorMessage(res));
     }
+
     const data = (await res.json()) as unknown;
     const item = normalizeAuctionItem(data);
     if (!item) {
@@ -139,6 +140,7 @@ export const generateAuctionItemDescription = createAsyncThunk<
       if (!token) {
         return rejectWithValue('You must be signed in to generate a description.');
       }
+
       const res = await fetch(`${API_BASE}/ai/generate-item-description/`, {
         method: 'POST',
         headers: {
@@ -147,10 +149,11 @@ export const generateAuctionItemDescription = createAsyncThunk<
         },
         body: JSON.stringify({ name }),
       });
+
       if (!res.ok) {
-        const text = await res.text();
-        return rejectWithValue(text || `HTTP ${res.status}`);
+        return rejectWithValue(await readErrorMessage(res));
       }
+
       const data = (await res.json()) as { description?: unknown };
       if (typeof data.description !== 'string' || !data.description.trim()) {
         return rejectWithValue('API returned no description.');
@@ -183,7 +186,6 @@ const auctionItemsSlice = createSlice({
     },
   },
   extraReducers: (builder) => {
-    // fetchAuctionItems
     builder
       .addCase(fetchAuctionItems.pending, (state) => {
         state.loading = true;
@@ -197,10 +199,7 @@ const auctionItemsSlice = createSlice({
       .addCase(fetchAuctionItems.rejected, (state, action) => {
         state.loading = false;
         state.error = action.payload ?? 'Failed to fetch items';
-      });
-
-    // createAuctionItem
-    builder
+      })
       .addCase(createAuctionItem.pending, (state) => {
         state.loading = true;
         state.error = null;
@@ -213,10 +212,7 @@ const auctionItemsSlice = createSlice({
       .addCase(createAuctionItem.rejected, (state, action) => {
         state.loading = false;
         state.error = action.payload ?? 'Failed to create item';
-      });
-
-    // generateAuctionItemDescription
-    builder
+      })
       .addCase(generateAuctionItemDescription.pending, (state) => {
         state.generateDescriptionLoading = true;
         state.generateDescriptionError = null;
@@ -257,7 +253,6 @@ export const selectGenerateDescriptionError = (state: {
   auctionItems: AuctionItemsState;
 }): string | null => state.auctionItems.generateDescriptionError;
 
-/** Select auction items whose auction_event matches the given event id. */
 export const selectAuctionItemsByEventId =
   (eventId: number) =>
   (state: { auctionItems: AuctionItemsState }): AuctionItem[] =>
@@ -273,7 +268,6 @@ type RootWithAuthItems = {
   auctionItems: AuctionItemsState;
 };
 
-/** True if the signed-in user's Cognito `sub` matches the item's `owner_sub`. */
 export const selectIsAuctionItemOwner =
   (item: AuctionItem) =>
   (state: RootWithAuthItems): boolean => {
@@ -281,7 +275,6 @@ export const selectIsAuctionItemOwner =
     return !!sub && item.owner_sub === sub;
   };
 
-/** Items for an event that belong to the current user (by `owner_sub`). */
 export const selectMyAuctionItemsByEventId =
   (eventId: number) =>
   (state: RootWithAuthItems): AuctionItem[] => {

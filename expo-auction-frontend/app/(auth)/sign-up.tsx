@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { useRouter } from 'expo-router';
-
 import {
   ActivityIndicator,
   Pressable,
@@ -13,12 +12,7 @@ import {
 
 import { Button } from '@/components/Button';
 import { Container } from '@/components/Container';
-import {
-  confirmSignUp,
-  resendSignUpCode,
-  signInWithEmailPassword,
-  signUpWithEmailPassword,
-} from '@/services/cognitoAuth';
+import { signInWithEmailPassword, signUpWithEmailPassword } from '@/services/cognitoAuth';
 import { getMyProfile, patchMyProfile } from '@/services/profileApi';
 import { useAppDispatch } from '@/state/hooks';
 import { setCredentials } from '@/state/slices/authSlice';
@@ -38,11 +32,8 @@ export default function SignUpScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [verificationCode, setVerificationCode] = useState('');
-  const [awaitingVerification, setAwaitingVerification] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [info, setInfo] = useState<string | null>(null);
 
   const normalizedEmail = email.trim().toLowerCase();
 
@@ -118,12 +109,9 @@ export default function SignUpScreen() {
             refreshToken: tokens.refreshToken,
           })
         );
+
         try {
           await getMyProfile(tokens.accessToken);
-        } catch {
-          /* non-fatal */
-        }
-        try {
           await patchMyProfile(tokens.accessToken, {
             display_name: displayName.trim() || normalizedEmail.split('@')[0] || 'User',
           });
@@ -131,22 +119,6 @@ export default function SignUpScreen() {
           /* non-fatal */
         }
         router.replace('/(tabs)/events');
-      } catch (err: unknown) {
-        setError(cognitoMessage(err));
-      } finally {
-        setLoading(false);
-      }
-    })();
-  };
-
-  const handleResend = () => {
-    setError(null);
-    setInfo(null);
-    setLoading(true);
-    void (async () => {
-      try {
-        await resendSignUpCode(normalizedEmail);
-        setInfo('A new code was sent to your email.');
       } catch (err: unknown) {
         setError(cognitoMessage(err));
       } finally {
@@ -274,6 +246,7 @@ const styles = StyleSheet.create({
     color: '#666',
     marginBottom: 24,
     textAlign: 'center',
+    lineHeight: 22,
   },
   label: {
     fontSize: 16,
@@ -292,9 +265,6 @@ const styles = StyleSheet.create({
   primaryBtn: { marginTop: 24, marginHorizontal: 0 },
   spinner: { marginTop: 24 },
   error: { marginTop: 16, color: '#c00', fontSize: 14 },
-  info: { marginTop: 12, color: '#1565c0', fontSize: 14 },
-  secondaryBtn: { marginTop: 12, alignSelf: 'flex-start' },
-  secondaryBtnText: { color: '#1565c0', fontSize: 15, fontWeight: '600' },
   linkWrap: { marginTop: 20, alignItems: 'center' },
   link: { fontSize: 16, color: '#1565c0', fontWeight: '600' },
 });

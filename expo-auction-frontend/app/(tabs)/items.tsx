@@ -1,7 +1,6 @@
-import { useRouter } from 'expo-router';
 import { useEffect } from 'react';
-import { StyleSheet, View } from 'react-native';
-import { ActivityIndicator, Button, Card, Text, useTheme } from 'react-native-paper';
+import { ScrollView, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Card, Text, useTheme } from 'react-native-paper';
 
 import { useAppDispatch, useAppSelector } from '@/state/hooks';
 import {
@@ -12,7 +11,6 @@ import {
 } from '@/state/slices/auctionItemsSlice';
 
 export default function ItemsScreen() {
-  const router = useRouter();
   const dispatch = useAppDispatch();
   const theme = useTheme();
 
@@ -25,19 +23,24 @@ export default function ItemsScreen() {
   }, [dispatch]);
 
   return (
-    <View style={styles.container}>
+    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <Text variant="headlineSmall" style={styles.title}>
         Items
       </Text>
+      <Text variant="bodySmall" style={styles.subtitle}>
+        All auction items currently stored in the Django SQLite database.
+      </Text>
 
       {loading ? (
-        <ActivityIndicator size="large" color={theme.colors.primary} />
+        <View style={styles.centered}>
+          <ActivityIndicator size="large" color={theme.colors.primary} />
+        </View>
       ) : error ? (
         <Text style={styles.errorText}>{error}</Text>
       ) : items.length === 0 ? (
-        <Text style={styles.emptyText}>No items yet.</Text>
+        <Text style={styles.emptyText}>No items yet. Open an event and add one.</Text>
       ) : (
-        items.slice(0, 30).map((item) => (
+        items.map((item) => (
           <Card key={String(item.id)} style={styles.card} mode="elevated">
             <Card.Content>
               <Text variant="titleMedium">{item.name}</Text>
@@ -65,18 +68,30 @@ export default function ItemsScreen() {
           </Card>
         ))
       )}
-    </View>
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    padding: 16,
     backgroundColor: '#f5f5f5',
   },
+  content: {
+    padding: 16,
+    paddingBottom: 32,
+  },
+  centered: {
+    paddingVertical: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   title: {
-    marginBottom: 12,
+    marginBottom: 6,
+  },
+  subtitle: {
+    color: '#666',
+    marginBottom: 16,
   },
   card: {
     marginBottom: 12,
@@ -85,11 +100,11 @@ const styles = StyleSheet.create({
   meta: {
     color: '#666',
     marginTop: 6,
-    marginBottom: 8,
+    marginBottom: 4,
   },
-  buy: {
-    marginTop: 12,
-    alignSelf: 'flex-start',
+  eventName: {
+    color: '#555',
+    marginBottom: 8,
   },
   errorText: {
     color: '#c00',

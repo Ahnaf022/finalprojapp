@@ -41,6 +41,14 @@ function addHoursToISO(isoSlice: string, hours: number): string {
   return d.toISOString().slice(0, 16);
 }
 
+function toApiDateTime(value: string): string | null {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+  return parsed.toISOString();
+}
+
 export default function AddEventScreen() {
   const router = useRouter();
   const dispatch = useAppDispatch();
@@ -73,14 +81,21 @@ export default function AddEventScreen() {
       return;
     }
 
+    const apiStart = toApiDateTime(startDatetime);
+    const apiEnd = toApiDateTime(endDatetime);
+    if (!apiStart || !apiEnd) {
+      Alert.alert('Invalid date', 'Use the format YYYY-MM-DDTHH:mm for both dates.');
+      return;
+    }
+
     void dispatch(
       createEvent({
         name: name.trim(),
         city: city.trim(),
         state: state.trim(),
         zip_code: zipCode.trim(),
-        start_datetime: startDatetime,
-        end_datetime: endDatetime,
+        start_datetime: apiStart,
+        end_datetime: apiEnd,
         is_active: isActive,
       })
     )
@@ -97,13 +112,11 @@ export default function AddEventScreen() {
     <KeyboardAvoidingView
       style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      keyboardVerticalOffset={Platform.OS === 'ios' ? 64 : 0}
-    >
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 64 : 0}>
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
-        keyboardShouldPersistTaps="handled"
-      >
+        keyboardShouldPersistTaps="handled">
         <Text style={styles.title}>Add Auction Event</Text>
 
         {!accessToken ? (

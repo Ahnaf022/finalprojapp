@@ -1,7 +1,7 @@
 import { useRouter } from 'expo-router';
 import { useEffect } from 'react';
-import { StyleSheet, View, FlatList, TouchableOpacity, ListRenderItem } from 'react-native';
-import { Card, Text, Button, ActivityIndicator, useTheme } from 'react-native-paper';
+import { FlatList, ListRenderItem, StyleSheet, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Button, Card, Text, useTheme } from 'react-native-paper';
 
 import type { AuctionEvent } from '@/constants/events';
 import { useAppDispatch, useAppSelector } from '@/state/hooks';
@@ -9,13 +9,13 @@ import { displayNameForSub, selectCurrentUser } from '@/state/slices/authSlice';
 import {
   fetchEvents,
   selectEvents,
-  selectEventsLoading,
   selectEventsError,
+  selectEventsLoading,
 } from '@/state/slices/eventsSlice';
 
 function formatEventDate(iso: string) {
-  const d = new Date(iso);
-  return d.toLocaleDateString(undefined, {
+  const date = new Date(iso);
+  return date.toLocaleDateString(undefined, {
     month: 'short',
     day: 'numeric',
     year: 'numeric',
@@ -46,13 +46,13 @@ const EventCard = ({
           Organizer: {organizerLabel}
         </Text>
         <Text variant="bodySmall" style={styles.cardDate}>
-          {formatEventDate(event.start_datetime)} – {formatEventDate(event.end_datetime)}
+          {formatEventDate(event.start_datetime)} - {formatEventDate(event.end_datetime)}
         </Text>
-        {!event.is_active && (
+        {!event.is_active ? (
           <Text variant="labelMedium" style={styles.cardBadge}>
             Ended
           </Text>
-        )}
+        ) : null}
       </Card.Content>
     </Card>
   </TouchableOpacity>
@@ -107,7 +107,9 @@ export default function EventsScreen() {
               <View style={styles.centered}>
                 <ActivityIndicator size="large" color={theme.colors.primary} />
               </View>
-            ) : null
+            ) : (
+              <Text style={styles.emptyText}>No events yet. Create one to get started.</Text>
+            )
           }
           ListHeaderComponent={
             <View style={styles.header}>
@@ -116,7 +118,7 @@ export default function EventsScreen() {
                   Events
                 </Text>
                 <Text variant="bodySmall" style={styles.subtitle}>
-                  Open an event to see its auction items and the Stripe Buy demo.
+                  Open an event to see its items, or add a new event for the demo.
                 </Text>
               </View>
               <Button mode="contained" onPress={() => router.push('/(tabs)/addEvent')} compact>
@@ -138,6 +140,7 @@ const styles = StyleSheet.create({
   listContent: {
     padding: 16,
     paddingBottom: 32,
+    flexGrow: 1,
   },
   header: {
     flexDirection: 'row',
@@ -187,5 +190,9 @@ const styles = StyleSheet.create({
   },
   errorText: {
     color: '#c00',
+  },
+  emptyText: {
+    color: '#666',
+    fontStyle: 'italic',
   },
 });

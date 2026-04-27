@@ -1,7 +1,7 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect } from 'react';
-import { StyleSheet, Text, View, ScrollView } from 'react-native';
-import { Button } from 'react-native-paper';
+import { useEffect, useMemo } from 'react';
+import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Button, useTheme } from 'react-native-paper';
 
 import type { AuctionItem } from '@/constants/auctionItems';
 import type { AuctionEvent } from '@/constants/events';
@@ -16,61 +16,81 @@ function formatDateTime(iso: string) {
   });
 }
 
-function ItemCard({
-  item,
-  ownerLabel,
-  onBuy,
-}: {
-  item: AuctionItem;
-  ownerLabel: string;
-  onBuy: () => void;
-}) {
+function ItemCard({ item, ownerLabel }: { item: AuctionItem; ownerLabel: string }) {
   const descriptionSnippet =
-    item.description.length > 80 ? `${item.description.slice(0, 80)}…` : item.description;
+    item.description.length > 100 ? `${item.description.slice(0, 100)}...` : item.description;
+
   return (
     <View style={styles.card}>
       <Text style={styles.cardTitle}>{item.name}</Text>
       <Text style={styles.cardSeller}>Seller: {ownerLabel}</Text>
       <Text style={styles.cardDescription}>{descriptionSnippet}</Text>
       <View style={styles.cardRow}>
-        <Text style={styles.cardPrice}>
-          ${item.current_price.toFixed(2)} {item.current_price > item.starting_price && '(current)'}
-        </Text>
+        <Text style={styles.cardPrice}>${item.current_price.toFixed(2)}</Text>
         <Text style={styles.cardStatus}>{item.status}</Text>
       </View>
-      {item.status === 'published' ? (
-        <Button mode="contained" compact onPress={onBuy} style={styles.buyButton}>
-          Buy
-        </Button>
-      ) : null}
     </View>
   );
 }
 
 export default function EventItemScreen() {
   const router = useRouter();
+  const theme = useTheme();
   const dispatch = useAppDispatch();
-  const { eventJson } = useLocalSearchParams<{ id: string; eventJson?: string }>();
-  let event: AuctionEvent | null = null;
-  if (eventJson) {
-    try {
-      event = JSON.parse(eventJson) as AuctionEvent;
-    } catch {
-      event = null;
-    }
-  }
+  const { id, eventJson } = useLocalSearchParams<{ id?: string; eventJson?: string }>();
 
-  const itemsForEvent = useAppSelector(selectAuctionItemsByEventId(event?.id ?? 0));
+  const events = useAppSelector(selectEvents);
+  const eventsLoading = useAppSelector(selectEventsLoading);
+  const eventsError = useAppSelector(selectEventsError);
+  const itemsLoading = useAppSelector(selectAuctionItemsLoading);
+  const itemsError = useAppSelector(selectAuctionItemsError);
   const currentUser = useAppSelector(selectCurrentUser);
 
+  const eventId = useMemo(() => {
+    const parsed = id ? Number(id) : NaN;
+    return Number.isFinite(parsed) ? parsed : null;
+  }, [id]);
+
+  const routeEvent = useMemo(() => {
+    if (!eventJson) return null;
+    try {
+      return JSON.parse(eventJson) as AuctionEvent;
+    } catch {
+      return null;
+    }
+  }, [eventJson]);
+
+  const storeEvent =
+    eventId === null ? null : (events.find((candidate) => candidate.id === eventId) ?? null);
+  const event = routeEvent ?? storeEvent;
+
+  const itemsForEvent = useAppSelector(selectAuctionItemsByEventId(eventId ?? routeEvent?.id ?? 0));
+
   useEffect(() => {
+    void dispatch(fetchEvents());
     void dispatch(fetchAuctionItems());
   }, [dispatch]);
 
+  if (eventId === null) {
+    return (
+      <View style={styles.centered}>
+        <Text style={styles.error}>Event id is missing.</Text>
+      </View>
+    );
+  }
+
+  if (!event && eventsLoading) {
+    return (
+      <View style={styles.centered}>
+        <ActivityIndicator size="large" color={theme.colors.primary} />
+      </View>
+    );
+  }
+
   if (!event) {
     return (
-      <View style={styles.container}>
-        <Text style={styles.error}>Event not found.</Text>
+      <View style={styles.centered}>
+        <Text style={styles.error}>{eventsError || 'Event not found.'}</Text>
       </View>
     );
   }
@@ -78,12 +98,14 @@ export default function EventItemScreen() {
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <Text style={styles.title}>{event.name}</Text>
+
       <View style={styles.section}>
         <Text style={styles.label}>Location</Text>
         <Text style={styles.value}>
           {event.city}, {event.state} {event.zip_code}
         </Text>
       </View>
+
       <View style={styles.section}>
         <Text style={styles.label}>Starts</Text>
         <Text style={styles.value}>{formatDateTime(event.start_datetime)}</Text>
@@ -92,6 +114,7 @@ export default function EventItemScreen() {
         <Text style={styles.label}>Ends</Text>
         <Text style={styles.value}>{formatDateTime(event.end_datetime)}</Text>
       </View>
+
       <View style={styles.section}>
         <Text style={styles.label}>Status</Text>
         <Text style={styles.value}>{event.is_active ? 'Active' : 'Ended'}</Text>
@@ -102,6 +125,7 @@ export default function EventItemScreen() {
           {displayNameForSub(event.created_by_sub, currentUser, event.created_by_display_name)}
         </Text>
       </View>
+
       <View style={styles.section}>
         <Text style={styles.label}>Created</Text>
         <Text style={styles.value}>{formatDateTime(event.created_at)}</Text>
@@ -126,7 +150,15 @@ export default function EventItemScreen() {
             Add
           </Button>
         </View>
-        {itemsForEvent.length === 0 ? (
+
+        {itemsLoading ? (
+          <View style={styles.itemsLoadingRow}>
+            <ActivityIndicator color={theme.colors.primary} />
+            <Text style={styles.loadingText}>Loading items...</Text>
+          </View>
+        ) : itemsError ? (
+          <Text style={styles.error}>{itemsError}</Text>
+        ) : itemsForEvent.length === 0 ? (
           <Text style={styles.emptyItems}>No items in this auction yet.</Text>
         ) : (
           itemsForEvent.map((item) => (
@@ -134,12 +166,6 @@ export default function EventItemScreen() {
               key={item.id}
               item={item}
               ownerLabel={displayNameForSub(item.owner_sub, currentUser, item.owner_display_name)}
-              onBuy={() =>
-                router.push({
-                  pathname: '/(tabs)/itemCheckout/[itemId]',
-                  params: { itemId: String(item.id) },
-                })
-              }
             />
           ))
         )}
@@ -156,6 +182,13 @@ const styles = StyleSheet.create({
   content: {
     padding: 20,
     paddingBottom: 40,
+  },
+  centered: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+    backgroundColor: 'white',
   },
   title: {
     fontSize: 24,
@@ -177,9 +210,9 @@ const styles = StyleSheet.create({
     color: '#111',
   },
   error: {
-    fontSize: 16,
-    color: '#666',
-    padding: 20,
+    fontSize: 15,
+    color: '#b00020',
+    lineHeight: 22,
   },
   sectionTitle: {
     fontSize: 18,
@@ -191,11 +224,20 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    marginBottom: 12,
   },
   emptyItems: {
     fontSize: 15,
     color: '#666',
     fontStyle: 'italic',
+  },
+  itemsLoadingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  loadingText: {
+    color: '#555',
   },
   card: {
     backgroundColor: '#f8f8f8',
@@ -237,9 +279,5 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     color: '#666',
     textTransform: 'capitalize',
-  },
-  buyButton: {
-    marginTop: 12,
-    alignSelf: 'flex-start',
   },
 });

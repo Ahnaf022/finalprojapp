@@ -19,8 +19,10 @@ export type AuthState = {
 
 function userFromTokenClaims(payload: Record<string, unknown> | null): AuthUser | null {
   if (!payload || typeof payload.sub !== 'string') return null;
+
   const cognitoUsername = payload['cognito:username'];
   const preferred = payload.preferred_username;
+
   return {
     sub: payload.sub,
     email: typeof payload.email === 'string' ? payload.email : null,
@@ -32,13 +34,15 @@ function userFromTokenClaims(payload: Record<string, unknown> | null): AuthUser 
 
 function deriveUser(idToken: string | null, accessToken: string | null): AuthUser | null {
   if (idToken) {
-    const u = userFromTokenClaims(decodeJwtPayload(idToken));
-    if (u) return u;
+    const user = userFromTokenClaims(decodeJwtPayload(idToken));
+    if (user) return user;
   }
+
   if (accessToken) {
-    const u = userFromTokenClaims(decodeJwtPayload(accessToken));
-    if (u) return u;
+    const user = userFromTokenClaims(decodeJwtPayload(accessToken));
+    if (user) return user;
   }
+
   return null;
 }
 
@@ -84,6 +88,7 @@ const authSlice = createSlice({
         state.status = 'loading';
         return;
       }
+
       state.status = state.user && state.accessToken ? 'authenticated' : 'unauthenticated';
     },
     setAuthError: (state, action: PayloadAction<string | null>) => {
@@ -95,21 +100,17 @@ const authSlice = createSlice({
   },
 });
 
-export const { setCredentials, clearSession, setAuthLoading, setAuthError } =
-  authSlice.actions;
+export const { setCredentials, clearSession, setAuthLoading, setAuthError } = authSlice.actions;
 
 export const selectAuth = (state: { auth: AuthState }): AuthState => state.auth;
-export const selectCurrentUser = (state: { auth: AuthState }): AuthUser | null =>
-  state.auth.user;
+export const selectCurrentUser = (state: { auth: AuthState }): AuthUser | null => state.auth.user;
 export const selectAccessToken = (state: { auth: AuthState }): string | null =>
   state.auth.accessToken;
 export const selectIsAuthenticated = (state: { auth: AuthState }): boolean =>
-  state.auth.status === 'authenticated' &&
-  !!state.auth.accessToken &&
-  !!state.auth.user?.sub;
+  state.auth.status === 'authenticated' && !!state.auth.accessToken && !!state.auth.user?.sub;
 
 /**
- * Human-readable label for a Cognito `sub` when listing events/items.
+ * Human-readable label for a user `sub` when listing events/items.
  * Prefer server-provided display strings when the API adds them (`*_display_name`).
  */
 export function displayNameForSub(
@@ -118,9 +119,11 @@ export function displayNameForSub(
   serverDisplayName?: string | null
 ): string {
   if (serverDisplayName?.trim()) return serverDisplayName.trim();
+
   if (currentUser?.sub === sub) {
     return currentUser.email ?? currentUser.username ?? shortenSub(sub);
   }
+
   return shortenSub(sub);
 }
 

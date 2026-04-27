@@ -1,8 +1,6 @@
 import os
 from decimal import Decimal
-from typing import Any, Optional
-
-import anthropic
+from typing import Any
 
 from rest_framework import generics, viewsets, status
 from rest_framework.permissions import AllowAny, IsAuthenticated, BasePermission, SAFE_METHODS
@@ -16,12 +14,7 @@ from .serializers import (
     profile_display_map_for_subs,
 )
 from .authentication import CognitoJWTAuthentication
-
-
-def _anthropic_error_message(err: Exception) -> str:
-    # Keep error messages concise for API responses.
-    msg = str(err).strip()
-    return msg if msg else err.__class__.__name__
+from .seed import ensure_seed_data
 
 
 class IsOwnerOrReadOnly(BasePermission):
@@ -55,7 +48,7 @@ class ProfileDisplayContextMixin:
 
 class UserProfileMeView(generics.RetrieveUpdateAPIView):
     """
-    GET/PATCH /api/profile/me/ — current user's profile (creates row on first access).
+    GET/PATCH /api/profile/me/ - current user's profile (creates row on first access).
     """
 
     serializer_class = UserProfileSerializer
@@ -92,7 +85,7 @@ class AuctionEventViewSet(ProfileDisplayContextMixin, viewsets.ModelViewSet):
     - PATCH /api/auctionEvent/{id}/ - Partial update of event
     - DELETE /api/auctionEvent/{id}/ - Delete event
     """
-    queryset = AuctionEvent.objects.all()
+    queryset = AuctionEvent.objects.order_by("start_datetime", "id")
     serializer_class = AuctionEventSerializer
     authentication_classes = [CognitoJWTAuthentication]
     permission_classes = [AllowAny]
@@ -131,6 +124,10 @@ class AuctionItemViewSet(ProfileDisplayContextMixin, viewsets.ModelViewSet):
     authentication_classes = [CognitoJWTAuthentication]
     permission_classes = [AllowAny]
 
+    def get_queryset(self):
+        ensure_seed_data()
+        return AuctionEvent.objects.order_by("start_datetime", "id")
+
     def get_permissions(self):
         if self.action in ("list", "retrieve"):
             return [AllowAny()]
@@ -155,7 +152,7 @@ class GenerateAuctionItemDescriptionView(APIView):
     Body: { "name": "Item name" }
     Response: { "description": "..." }
 
-    Auth: required (JWT).
+    Auth: required (demo bearer token).
     """
 
     authentication_classes = [CognitoJWTAuthentication]
@@ -169,54 +166,12 @@ class GenerateAuctionItemDescriptionView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
-        if not api_key:
-            return Response(
-                {"detail": "ANTHROPIC_API_KEY is not configured on the server."},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-
-        # Allow overriding model per environment (helps when accounts have different model access).
-        model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
-
         prompt_name = name.strip()[:200]
-        system = (
-            "You write concise, accurate auction listing descriptions for university students. "
-            "Do not invent brand/model details. If specifics are unknown, keep it general. "
-            "Return only the description text (no title, no bullets unless natural)."
+        description = (
+            f"{prompt_name} is available for this auction event. "
+            "Condition not specified. Please review the item details before placing a bid."
         )
-        user = (
-            f'Write a short auction description (2-4 sentences) for this item name: "{prompt_name}". '
-            "Mention condition in a neutral way (if unknown, say 'condition not specified')."
-        )
-
-        try:
-            client = anthropic.Anthropic(api_key=api_key)
-            message = client.messages.create(
-                model=model,
-                max_tokens=200,
-                system=system,
-                messages=[{"role": "user", "content": user}],
-            )
-
-            description: Optional[str] = None
-            if getattr(message, "content", None) and len(message.content) > 0:
-                first = message.content[0]
-                text = getattr(first, "text", None)
-                if isinstance(text, str) and text.strip():
-                    description = text.strip()
-
-            if not description:
-                return Response(
-                    {"detail": "Anthropic returned no description text."},
-                    status=status.HTTP_502_BAD_GATEWAY,
-                )
-            return Response({"description": description}, status=status.HTTP_200_OK)
-        except Exception as e:
-            return Response(
-                {"detail": f"Anthropic API request error: {_anthropic_error_message(e)}"},
-                status=status.HTTP_502_BAD_GATEWAY,
-            )
+        return Response({"description": description}, status=status.HTTP_200_OK)
 
 
 class CreateCheckoutSessionView(APIView):

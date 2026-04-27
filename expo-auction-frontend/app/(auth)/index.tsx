@@ -18,8 +18,13 @@ import { getMyProfile } from '@/services/profileApi';
 import { useAppDispatch } from '@/state/hooks';
 import { setCredentials } from '@/state/slices/authSlice';
 
-function cognitoMessage(err: unknown): string {
-  if (err && typeof err === 'object' && 'message' in err && typeof (err as Error).message === 'string') {
+function authMessage(err: unknown): string {
+  if (
+    err &&
+    typeof err === 'object' &&
+    'message' in err &&
+    typeof (err as Error).message === 'string'
+  ) {
     return (err as Error).message;
   }
   return 'Sign in failed';
@@ -58,7 +63,7 @@ export default function SignInScreen() {
         }
         router.replace('/(tabs)/events');
       } catch (err: unknown) {
-        setError(cognitoMessage(err));
+        setError(authMessage(err));
       } finally {
         setLoading(false);
       }
@@ -71,7 +76,7 @@ export default function SignInScreen() {
         <Container>
           <View style={styles.signInContainer}>
             <Text style={styles.title}>Sign In</Text>
-            <Text style={styles.subtitle}>Welcome back! Please sign in to continue.</Text>
+            <Text style={styles.subtitle}>Use any email and password for the local demo.</Text>
 
             <View style={styles.formContainer}>
               <Text style={styles.label}>Email</Text>
@@ -111,8 +116,7 @@ export default function SignInScreen() {
               <Pressable
                 onPress={() => router.push('/(auth)/sign-up')}
                 style={styles.linkWrap}
-                disabled={loading}
-              >
+                disabled={loading}>
                 <Text style={styles.link}>Create an account</Text>
               </Pressable>
             </View>

@@ -1,3 +1,4 @@
-# Core project dependencies are typically installed per course/setup.
-# Stripe (Checkout Session API for one-time payments POC):
-stripe>=11.0.0
+Django>=6.0,<6.1
+djangorestframework>=3.16,<3.17
+django-cors-headers>=4.9,<5.0
+python-dotenv>=1.1,<2.0

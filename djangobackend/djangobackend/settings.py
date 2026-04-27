@@ -36,14 +36,25 @@ DEBUG = True
 
 ALLOWED_HOSTS = ["*"]
 
-# CORS for local development (Expo / React Native)
-# CORS_ALLOWED_ORIGINS = [
-#     "http://localhost:8081",
-#     "http://127.0.0.1:8081",
-#     "http://localhost:19006",
-#     "http://127.0.0.1:19006",
-# ]
-CORS_ALLOW_ALL_ORIGINS = True
+# Allow the Expo web app to call Django from the EC2 public IP and local dev URLs.
+CORS_ALLOWED_ORIGINS = [
+    "http://3.138.107.95:8081",
+    "http://localhost:8081",
+    "http://127.0.0.1:8081",
+    "http://localhost:19006",
+    "http://127.0.0.1:19006",
+]
+CSRF_TRUSTED_ORIGINS = [
+    "http://3.138.107.95:8081",
+    "http://localhost:8081",
+    "http://127.0.0.1:8081",
+]
+extra_frontend_origin = os.environ.get("DJANGO_ALLOWED_FRONTEND_ORIGIN", "").strip()
+if extra_frontend_origin:
+    if extra_frontend_origin not in CORS_ALLOWED_ORIGINS:
+        CORS_ALLOWED_ORIGINS.append(extra_frontend_origin)
+    if extra_frontend_origin not in CSRF_TRUSTED_ORIGINS:
+        CSRF_TRUSTED_ORIGINS.append(extra_frontend_origin)
 
 # Application definition
 

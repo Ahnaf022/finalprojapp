@@ -1,4 +1,5 @@
 export type SignUpResult = {
+  userConfirmed?: boolean;
   userId?: string;
   nextStep?: string;
   message?: string;
@@ -29,13 +30,22 @@ export async function signInWithEmailPassword(email: string, password: string): 
 }
 
 export async function signOut(): Promise<void> {
-  return;
+  currentSession = null;
 }
 
-export async function getCurrentUser(): Promise<any> {
+export async function getCurrentUser(): Promise<{
+  email: string;
+  username: string;
+  sub: string;
+} | null> {
+  if (!currentSession) {
+    return null;
+  }
+
   return {
-    email: "demo@example.com",
-    username: "demo",
+    email: currentSession.email,
+    username: currentSession.username,
+    sub: currentSession.sub,
   };
 }
 
