@@ -1,0 +1,3507 @@
+diff --git a/djangobackend/.env.example b/djangobackend/.env.example
+--- a/djangobackend/.env.example
++++ b/djangobackend/.env.example
+@@ -1,35 +1,5 @@
+-# AWS Cognito Configuration
+-# Copy this file to .env and fill in your actual values
++# Django backend demo settings
++# Copy to .env only if you want to override defaults.
+ 
+-# AWS Cognito Region (e.g., us-east-1, us-west-2)
+-COGNITO_REGION=us-east-1
+-
+-# AWS Cognito User Pool ID (found in AWS Cognito Console)
+-COGNITO_USER_POOL_ID=us-east-1_asdfasdf
+-
+-# AWS Cognito App Client ID (found in AWS Cognito Console under App clients)
+-COGNITO_APP_CLIENT_ID=your_app_client_id_here
+-
+-# AWS S3 Configuration
+-# These are required for image uploads
+-AWS_REGION=us-east-1
+-AWS_S3_BUCKET_NAME=your-bucket-name-here
+-# Keys from your S3 Uploader IAM user:
+-AWS_ACCESS_KEY_ID=your-access-key-id-here
+-AWS_SECRET_ACCESS_KEY=your-secret-access-key-here
+-
+-ANTHROPIC_API_KEY=your-anthropic-api-key-here
+-
+-# Stripe (test mode) — keys from https://dashboard.stripe.com/test/apikeys
+-# Do not commit real keys.
+-#
+-# Checkout redirects: Stripe sends the *browser* to these URLs after pay / cancel.
+-# Test mode usually allows http://localhost — fine for Expo web (`npx expo start --web`),
+-# default dev server is http://localhost:8081. Keep Expo running so the page loads.
+-# Use {CHECKOUT_SESSION_ID} in the success URL if you want Stripe to append the session id.
+-#
+-# If you pay from a phone/emulator, localhost is the device itself — use your PC’s LAN IP
+-# (e.g. http://192.168.1.5:8081/...) or an HTTPS tunnel (ngrok, etc.) instead.
+-STRIPE_SECRET_KEY=
+-STRIPE_CHECKOUT_SUCCESS_URL=http://localhost:8081/events?checkout=success&session_id={CHECKOUT_SESSION_ID}
+-STRIPE_CHECKOUT_CANCEL_URL=http://localhost:8081/events?checkout=cancel
++# Allow the Expo frontend to call the API from the EC2 public IP.
++DJANGO_ALLOWED_FRONTEND_ORIGIN=http://3.138.107.95:8081
+diff --git a/djangobackend/auctions/authentication.py b/djangobackend/auctions/authentication.py
+--- a/djangobackend/auctions/authentication.py
++++ b/djangobackend/auctions/authentication.py
+@@ -1,106 +1,100 @@
+-import requests
+-from jose import jwt
+-from jose.exceptions import JWTError, ExpiredSignatureError
++import base64
++import hashlib
++import json
++from typing import Any
++
+ from rest_framework.authentication import BaseAuthentication
+ from rest_framework.exceptions import AuthenticationFailed
+-import os
+-from functools import lru_cache
+ 
+-def get_cognito_config():
+-    """Get Cognito configuration from environment variables."""
+-    region = os.environ.get('COGNITO_REGION')
+-    user_pool_id = os.environ.get('COGNITO_USER_POOL_ID')
+-    app_client_id = os.environ.get('COGNITO_APP_CLIENT_ID')
+-    return region, user_pool_id, app_client_id
+ 
++def _base64url_decode(segment: str) -> dict[str, Any]:
++    padded = segment + "=" * (-len(segment) % 4)
++    try:
++        raw = base64.urlsafe_b64decode(padded.encode("utf-8")).decode("utf-8")
++        payload = json.loads(raw)
++    except (ValueError, json.JSONDecodeError, UnicodeDecodeError) as exc:
++        raise AuthenticationFailed("Invalid demo auth token.") from exc
++    if not isinstance(payload, dict):
++        raise AuthenticationFailed("Invalid demo auth payload.")
++    return payload
+ 
+-class CognitoUser:
+-    def __init__(self, claims):
++
++def _sub_for_email(email: str) -> str:
++    digest = hashlib.sha256(email.lower().encode("utf-8")).hexdigest()[:24]
++    return f"demo-{digest}"
++
++
++class DemoUser:
++    def __init__(self, claims: dict[str, Any]):
++        email = claims.get("email")
++        preferred_username = claims.get("preferred_username")
++
+         self.claims = claims
+-        self.username = claims.get("email") or claims.get("cognito:username")
+         self.sub = claims.get("sub")
++        self.username = (
++            preferred_username
++            if isinstance(preferred_username, str) and preferred_username.strip()
++            else email
++        )
+ 
+     @property
+-    def email(self):
+-        e = self.claims.get("email")
+-        return e if isinstance(e, str) else None
++    def email(self) -> str | None:
++        value = self.claims.get("email")
++        return value if isinstance(value, str) else None
+ 
+     @property
+-    def is_authenticated(self):
++    def is_authenticated(self) -> bool:
+         return True
+ 
+-    def __str__(self):
+-        return self.username or self.sub or "CognitoUser"
++    def __str__(self) -> str:
++        return self.username or self.sub or "DemoUser"
+ 
+ 
+-@lru_cache(maxsize=8)
+-def _fetch_jwks(jwks_url: str):
+-    resp = requests.get(jwks_url, timeout=5)
+-    resp.raise_for_status()
+-    jwks = resp.json()
+-    if "keys" not in jwks:
+-        raise AuthenticationFailed(f"Invalid JWKS response: {jwks}")
+-    return jwks
++class CognitoJWTAuthentication(BaseAuthentication):
++    """
++    Demo-friendly bearer token authentication.
+ 
++    The frontend issues unsigned JWT-shaped tokens whose payload includes a stable
++    `sub` and `email`. This keeps the existing API contract intact while fully
++    bypassing Cognito for solo-project demos.
++    """
+ 
+-class CognitoJWTAuthentication(BaseAuthentication):
+     def authenticate(self, request):
+-        # Get Cognito configuration from environment variables
+-        COGNITO_REGION, USER_POOL_ID, APP_CLIENT_ID = get_cognito_config()
+-                
+-        # Validate that environment variables are set
+-        if not COGNITO_REGION or not USER_POOL_ID or not APP_CLIENT_ID:
+-            raise AuthenticationFailed('Cognito configuration is missing. Please set COGNITO_REGION, COGNITO_USER_POOL_ID, and COGNITO_APP_CLIENT_ID environment variables.')
+-        
+-        auth_header = request.headers.get('Authorization')
+-        if not auth_header or not auth_header.startswith('Bearer '):
++        auth_header = request.headers.get("Authorization", "").strip()
++        if not auth_header:
+             return None
+ 
+-        token = auth_header.split(' ')[1]
++        scheme, _, token = auth_header.partition(" ")
++        if scheme.lower() != "bearer" or not token.strip():
++            raise AuthenticationFailed("Expected a Bearer token.")
+ 
+-        try:
+-            # First, decode without verification to check token type and audience
+-            unverified_claims = jwt.get_unverified_claims(token)
+-            token_use = unverified_claims.get('token_use')
+-            
+-            if token_use not in ("id", "access"):
+-                raise AuthenticationFailed(f'Invalid token type. Expected "id" or "access", got: {token_use}')
++        token = token.strip()
++        claims: dict[str, Any]
+ 
+-            # Cognito ID token uses "aud"; access token uses "client_id"
+-            token_client_id = unverified_claims.get("aud") if token_use == "id" else unverified_claims.get("client_id")
+-            if token_client_id and token_client_id != APP_CLIENT_ID:
+-                raise AuthenticationFailed("Token was not issued for this app client.")
+-            
+-            jwks_url = f'https://cognito-idp.{COGNITO_REGION}.amazonaws.com/{USER_POOL_ID}/.well-known/jwks.json'
+-            jwks = _fetch_jwks(jwks_url)
+-            
+-            headers = jwt.get_unverified_header(token)
+-            key = next((k for k in jwks['keys'] if k['kid'] == headers['kid']), None)
+-            if not key:
+-                raise AuthenticationFailed('Public key not found.')
++        if token == "mock-token":
++            claims = {
++                "sub": _sub_for_email("demo@example.com"),
++                "email": "demo@example.com",
++                "preferred_username": "demo",
++            }
++        else:
++            parts = token.split(".")
++            if len(parts) < 2:
++                raise AuthenticationFailed("Invalid demo auth token.")
++            claims = _base64url_decode(parts[1])
+ 
+-            issuer = f'https://cognito-idp.{COGNITO_REGION}.amazonaws.com/{USER_POOL_ID}'
+-            if token_use == "id":
+-                payload = jwt.decode(
+-                    token,
+-                    key,
+-                    algorithms=['RS256'],
+-                    audience=APP_CLIENT_ID,
+-                    issuer=issuer,
+-                )
+-            else:
+-                payload = jwt.decode(
+-                    token,
+-                    key,
+-                    algorithms=['RS256'],
+-                    issuer=issuer,
+-                )
++        email = claims.get("email")
++        sub = claims.get("sub")
+ 
+-            return (CognitoUser(payload), None)
++        if not isinstance(email, str) or not email.strip():
++            raise AuthenticationFailed("Demo auth token is missing an email.")
+ 
+-        except ExpiredSignatureError:
+-            raise AuthenticationFailed('Token has expired')
+-        except requests.RequestException as e:
+-            raise AuthenticationFailed(f'Failed to fetch JWKS: {str(e)}')
+-        except JWTError as e:
+-            raise AuthenticationFailed(f'JWT error: {str(e)}')
++        if not isinstance(sub, str) or not sub.strip():
++            claims["sub"] = _sub_for_email(email)
++
++        if "preferred_username" not in claims or not isinstance(
++            claims.get("preferred_username"), str
++        ):
++            claims["preferred_username"] = email.split("@")[0]
++
++        return (DemoUser(claims), None)
+diff --git a/djangobackend/auctions/seed.py b/djangobackend/auctions/seed.py
+new file mode 100644
+--- /dev/null
++++ b/djangobackend/auctions/seed.py
+@@ -0,0 +1,89 @@
++from datetime import timedelta
++from decimal import Decimal
++
++from django.db import transaction
++from django.utils import timezone
++
++from .models import AuctionEvent, AuctionItem, UserProfile
++
++
++def ensure_seed_data() -> None:
++    """
++    Populate a small demo dataset only when the database is completely empty.
++
++    This keeps first-run demos from landing on blank events/items pages while
++    leaving any real user-created data untouched.
++    """
++
++    if AuctionEvent.objects.exists() or AuctionItem.objects.exists():
++        return
++
++    with transaction.atomic():
++        if AuctionEvent.objects.exists() or AuctionItem.objects.exists():
++            return
++
++        sample_profiles = [
++            ("demo-seller-alice", "Alice"),
++            ("demo-seller-bob", "Bob"),
++            ("demo-seller-carol", "Carol"),
++        ]
++        for sub, display_name in sample_profiles:
++            UserProfile.objects.get_or_create(
++                cognito_sub=sub,
++                defaults={"display_name": display_name},
++            )
++
++        now = timezone.now()
++
++        spring_event = AuctionEvent.objects.create(
++            name="Campus Spring Auction",
++            city="Columbus",
++            state="OH",
++            zip_code="43210",
++            start_datetime=now + timedelta(days=1),
++            end_datetime=now + timedelta(days=1, hours=4),
++            created_by_sub="demo-seller-alice",
++            is_active=True,
++        )
++        tech_event = AuctionEvent.objects.create(
++            name="Student Tech Swap",
++            city="Cleveland",
++            state="OH",
++            zip_code="44114",
++            start_datetime=now + timedelta(days=3),
++            end_datetime=now + timedelta(days=3, hours=6),
++            created_by_sub="demo-seller-bob",
++            is_active=True,
++        )
++
++        AuctionItem.objects.bulk_create(
++            [
++                AuctionItem(
++                    auction_event=spring_event,
++                    name="Mini Fridge",
++                    description="Compact dorm mini fridge in working condition.",
++                    owner_sub="demo-seller-alice",
++                    starting_price=Decimal("40.00"),
++                    current_price=Decimal("40.00"),
++                    status="published",
++                ),
++                AuctionItem(
++                    auction_event=spring_event,
++                    name="Desk Lamp",
++                    description="LED desk lamp with adjustable brightness.",
++                    owner_sub="demo-seller-carol",
++                    starting_price=Decimal("12.00"),
++                    current_price=Decimal("12.00"),
++                    status="published",
++                ),
++                AuctionItem(
++                    auction_event=tech_event,
++                    name='TI-84 Calculator',
++                    description="Graphing calculator ready for the next semester.",
++                    owner_sub="demo-seller-bob",
++                    starting_price=Decimal("55.00"),
++                    current_price=Decimal("55.00"),
++                    status="published",
++                ),
++            ]
++        )
+diff --git a/djangobackend/auctions/views.py b/djangobackend/auctions/views.py
+--- a/djangobackend/auctions/views.py
++++ b/djangobackend/auctions/views.py
+@@ -1,9 +1,7 @@
+ import os
+ from decimal import Decimal
+-from typing import Any, Optional
++from typing import Any
+ 
+-import anthropic
+-
+ from rest_framework import generics, viewsets, status
+ from rest_framework.permissions import AllowAny, IsAuthenticated, BasePermission, SAFE_METHODS
+ from rest_framework.response import Response
+@@ -16,14 +14,9 @@
+     profile_display_map_for_subs,
+ )
+ from .authentication import CognitoJWTAuthentication
++from .seed import ensure_seed_data
+ 
+ 
+-def _anthropic_error_message(err: Exception) -> str:
+-    # Keep error messages concise for API responses.
+-    msg = str(err).strip()
+-    return msg if msg else err.__class__.__name__
+-
+-
+ class IsOwnerOrReadOnly(BasePermission):
+     def has_object_permission(self, request, view, obj):
+         if request.method in SAFE_METHODS:
+@@ -55,7 +48,7 @@
+ 
+ class UserProfileMeView(generics.RetrieveUpdateAPIView):
+     """
+-    GET/PATCH /api/profile/me/ — current user's profile (creates row on first access).
++    GET/PATCH /api/profile/me/ - current user's profile (creates row on first access).
+     """
+ 
+     serializer_class = UserProfileSerializer
+@@ -92,7 +85,7 @@
+     - PATCH /api/auctionEvent/{id}/ - Partial update of event
+     - DELETE /api/auctionEvent/{id}/ - Delete event
+     """
+-    queryset = AuctionEvent.objects.all()
++    queryset = AuctionEvent.objects.order_by("start_datetime", "id")
+     serializer_class = AuctionEventSerializer
+     authentication_classes = [CognitoJWTAuthentication]
+     permission_classes = [AllowAny]
+@@ -97,6 +90,10 @@
+     authentication_classes = [CognitoJWTAuthentication]
+     permission_classes = [AllowAny]
+ 
++    def get_queryset(self):
++        ensure_seed_data()
++        return AuctionEvent.objects.order_by("start_datetime", "id")
++
+     def get_permissions(self):
+         if self.action in ("list", "retrieve"):
+             return [AllowAny()]
+@@ -126,7 +123,7 @@
+     - PATCH /api/auctionItem/{id}/ - Partial update of item
+     - DELETE /api/auctionItem/{id}/ - Delete item
+     """
+-    queryset = AuctionItem.objects.select_related('auction_event').all()
++    queryset = AuctionItem.objects.select_related("auction_event").order_by("created_at", "id")
+     serializer_class = AuctionItemSerializer
+     authentication_classes = [CognitoJWTAuthentication]
+     permission_classes = [AllowAny]
+@@ -131,6 +128,14 @@
+     authentication_classes = [CognitoJWTAuthentication]
+     permission_classes = [AllowAny]
+ 
++    def get_queryset(self):
++        ensure_seed_data()
++        queryset = AuctionItem.objects.select_related("auction_event").order_by("created_at", "id")
++        auction_event_id = self.request.query_params.get("auction_event")
++        if auction_event_id:
++            queryset = queryset.filter(auction_event_id=auction_event_id)
++        return queryset
++
+     def get_permissions(self):
+         if self.action in ("list", "retrieve"):
+             return [AllowAny()]
+@@ -155,7 +160,7 @@
+     Body: { "name": "Item name" }
+     Response: { "description": "..." }
+ 
+-    Auth: required (JWT).
++    Auth: required (demo bearer token).
+     """
+ 
+     authentication_classes = [CognitoJWTAuthentication]
+@@ -169,56 +174,14 @@
+                 status=status.HTTP_400_BAD_REQUEST,
+             )
+ 
+-        api_key = os.environ.get("ANTHROPIC_API_KEY")
+-        if not api_key:
+-            return Response(
+-                {"detail": "ANTHROPIC_API_KEY is not configured on the server."},
+-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+-            )
+-
+-        # Allow overriding model per environment (helps when accounts have different model access).
+-        model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+-
+         prompt_name = name.strip()[:200]
+-        system = (
+-            "You write concise, accurate auction listing descriptions for university students. "
+-            "Do not invent brand/model details. If specifics are unknown, keep it general. "
+-            "Return only the description text (no title, no bullets unless natural)."
++        description = (
++            f"{prompt_name} is available for this auction event. "
++            "Condition not specified. Please review the item details before placing a bid."
+         )
+-        user = (
+-            f'Write a short auction description (2-4 sentences) for this item name: "{prompt_name}". '
+-            "Mention condition in a neutral way (if unknown, say 'condition not specified')."
+-        )
++        return Response({"description": description}, status=status.HTTP_200_OK)
+ 
+-        try:
+-            client = anthropic.Anthropic(api_key=api_key)
+-            message = client.messages.create(
+-                model=model,
+-                max_tokens=200,
+-                system=system,
+-                messages=[{"role": "user", "content": user}],
+-            )
+ 
+-            description: Optional[str] = None
+-            if getattr(message, "content", None) and len(message.content) > 0:
+-                first = message.content[0]
+-                text = getattr(first, "text", None)
+-                if isinstance(text, str) and text.strip():
+-                    description = text.strip()
+-
+-            if not description:
+-                return Response(
+-                    {"detail": "Anthropic returned no description text."},
+-                    status=status.HTTP_502_BAD_GATEWAY,
+-                )
+-            return Response({"description": description}, status=status.HTTP_200_OK)
+-        except Exception as e:
+-            return Response(
+-                {"detail": f"Anthropic API request error: {_anthropic_error_message(e)}"},
+-                status=status.HTTP_502_BAD_GATEWAY,
+-            )
+-
+-
+ class CreateCheckoutSessionView(APIView):
+     """
+     POST /api/payments/create-checkout-session/
+diff --git a/djangobackend/djangobackend/settings.py b/djangobackend/djangobackend/settings.py
+--- a/djangobackend/djangobackend/settings.py
++++ b/djangobackend/djangobackend/settings.py
+@@ -36,14 +36,25 @@
+ 
+ ALLOWED_HOSTS = ["*"]
+ 
+-# CORS for local development (Expo / React Native)
+-# CORS_ALLOWED_ORIGINS = [
+-#     "http://localhost:8081",
+-#     "http://127.0.0.1:8081",
+-#     "http://localhost:19006",
+-#     "http://127.0.0.1:19006",
+-# ]
+-CORS_ALLOW_ALL_ORIGINS = True
++# Allow the Expo web app to call Django from the EC2 public IP and local dev URLs.
++CORS_ALLOWED_ORIGINS = [
++    "http://3.138.107.95:8081",
++    "http://localhost:8081",
++    "http://127.0.0.1:8081",
++    "http://localhost:19006",
++    "http://127.0.0.1:19006",
++]
++CSRF_TRUSTED_ORIGINS = [
++    "http://3.138.107.95:8081",
++    "http://localhost:8081",
++    "http://127.0.0.1:8081",
++]
++extra_frontend_origin = os.environ.get("DJANGO_ALLOWED_FRONTEND_ORIGIN", "").strip()
++if extra_frontend_origin:
++    if extra_frontend_origin not in CORS_ALLOWED_ORIGINS:
++        CORS_ALLOWED_ORIGINS.append(extra_frontend_origin)
++    if extra_frontend_origin not in CSRF_TRUSTED_ORIGINS:
++        CSRF_TRUSTED_ORIGINS.append(extra_frontend_origin)
+ 
+ # Application definition
+ 
+diff --git a/djangobackend/requirements.txt b/djangobackend/requirements.txt
+--- a/djangobackend/requirements.txt
++++ b/djangobackend/requirements.txt
+@@ -1,3 +1,4 @@
+-# Core project dependencies are typically installed per course/setup.
+-# Stripe (Checkout Session API for one-time payments POC):
+-stripe>=11.0.0
++Django>=6.0,<6.1
++djangorestframework>=3.16,<3.17
++django-cors-headers>=4.9,<5.0
++python-dotenv>=1.1,<2.0
+diff --git a/expo-auction-frontend/.env.example b/expo-auction-frontend/.env.example
+--- a/expo-auction-frontend/.env.example
++++ b/expo-auction-frontend/.env.example
+@@ -1,24 +1,4 @@
+-# Django REST API base URL (no trailing slash), e.g. http://192.168.1.5:8000/api
+-EXPO_PUBLIC_DJANGO_API_URL=http://localhost:8000/api
++# Expo frontend demo settings
+ 
+-# Stripe (optional for this app): Hosted Checkout opens in the browser; the publishable
+-# key is only needed if you add client-side Stripe.js. Secret key stays on Django only.
+-# EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY=pk_test_...
+-
+-# AWS Cognito Configuration
+-# Copy this file to .env and fill in your actual values
+-# DO NOT commit .env to version control
+-
+-# AWS Cognito Region (e.g., us-east-1, us-west-2)
+-EXPO_PUBLIC_COGNITO_REGION=us-east-1
+-
+-# AWS Cognito User Pool ID
+-# Found in AWS Cognito Console under your User Pool
+-EXPO_PUBLIC_COGNITO_USER_POOL_ID=us-east-1_xQf6ajVGZ
+-
+-# AWS Cognito App Client ID
+-# Found in AWS Cognito Console under App integration > App clients
+-EXPO_PUBLIC_COGNITO_CLIENT_ID=your_app_client_id_here
+-
+-# Optional: only if you use Cognito Hosted UI / OAuth redirects
+-# EXPO_PUBLIC_COGNITO_USER_POOL_DOMAIN=https://your-domain.auth.us-east-1.amazoncognito.com
++# Django REST API base URL without a trailing slash.
++EXPO_PUBLIC_DJANGO_API_URL=http://3.138.107.95:8000/api
+diff --git a/expo-auction-frontend/app/(auth)/index.tsx b/expo-auction-frontend/app/(auth)/index.tsx
+--- a/expo-auction-frontend/app/(auth)/index.tsx
++++ b/expo-auction-frontend/app/(auth)/index.tsx
+@@ -18,8 +18,13 @@
+ import { useAppDispatch } from '@/state/hooks';
+ import { setCredentials } from '@/state/slices/authSlice';
+ 
+-function cognitoMessage(err: unknown): string {
+-  if (err && typeof err === 'object' && 'message' in err && typeof (err as Error).message === 'string') {
++function authMessage(err: unknown): string {
++  if (
++    err &&
++    typeof err === 'object' &&
++    'message' in err &&
++    typeof (err as Error).message === 'string'
++  ) {
+     return (err as Error).message;
+   }
+   return 'Sign in failed';
+@@ -58,7 +63,7 @@
+         }
+         router.replace('/(tabs)/events');
+       } catch (err: unknown) {
+-        setError(cognitoMessage(err));
++        setError(authMessage(err));
+       } finally {
+         setLoading(false);
+       }
+@@ -71,7 +76,7 @@
+         <Container>
+           <View style={styles.signInContainer}>
+             <Text style={styles.title}>Sign In</Text>
+-            <Text style={styles.subtitle}>Welcome back! Please sign in to continue.</Text>
++            <Text style={styles.subtitle}>Use any email and password for the local demo.</Text>
+ 
+             <View style={styles.formContainer}>
+               <Text style={styles.label}>Email</Text>
+@@ -111,8 +116,7 @@
+               <Pressable
+                 onPress={() => router.push('/(auth)/sign-up')}
+                 style={styles.linkWrap}
+-                disabled={loading}
+-              >
++                disabled={loading}>
+                 <Text style={styles.link}>Create an account</Text>
+               </Pressable>
+             </View>
+diff --git a/expo-auction-frontend/app/(auth)/sign-up.tsx b/expo-auction-frontend/app/(auth)/sign-up.tsx
+--- a/expo-auction-frontend/app/(auth)/sign-up.tsx
++++ b/expo-auction-frontend/app/(auth)/sign-up.tsx
+@@ -1,6 +1,5 @@
+ import { useState } from 'react';
+ import { useRouter } from 'expo-router';
+-
+ import {
+   ActivityIndicator,
+   Pressable,
+@@ -13,12 +12,7 @@
+ 
+ import { Button } from '@/components/Button';
+ import { Container } from '@/components/Container';
+-import {
+-  confirmSignUp,
+-  resendSignUpCode,
+-  signInWithEmailPassword,
+-  signUpWithEmailPassword,
+-} from '@/services/cognitoAuth';
++import { signInWithEmailPassword, signUpWithEmailPassword } from '@/services/cognitoAuth';
+ import { getMyProfile, patchMyProfile } from '@/services/profileApi';
+ import { useAppDispatch } from '@/state/hooks';
+ import { setCredentials } from '@/state/slices/authSlice';
+@@ -23,11 +17,16 @@
+ import { useAppDispatch } from '@/state/hooks';
+ import { setCredentials } from '@/state/slices/authSlice';
+ 
+-function cognitoMessage(err: unknown): string {
+-  if (err && typeof err === 'object' && 'message' in err && typeof (err as Error).message === 'string') {
+-    return (err as Error).message;
++function authMessage(error: unknown): string {
++  if (
++    error &&
++    typeof error === 'object' &&
++    'message' in error &&
++    typeof (error as Error).message === 'string'
++  ) {
++    return (error as Error).message;
+   }
+-  return 'Something went wrong';
++  return 'Could not create your demo account.';
+ }
+ 
+ export default function SignUpScreen() {
+@@ -38,11 +37,8 @@
+   const [email, setEmail] = useState('');
+   const [password, setPassword] = useState('');
+   const [confirmPassword, setConfirmPassword] = useState('');
+-  const [verificationCode, setVerificationCode] = useState('');
+-  const [awaitingVerification, setAwaitingVerification] = useState(false);
+   const [loading, setLoading] = useState(false);
+   const [error, setError] = useState<string | null>(null);
+-  const [info, setInfo] = useState<string | null>(null);
+ 
+   const normalizedEmail = email.trim().toLowerCase();
+ 
+@@ -48,69 +44,28 @@
+ 
+   const handleSignUp = () => {
+     setError(null);
+-    setInfo(null);
++
+     if (!normalizedEmail || !password) {
+-      setError('Email and password are required');
++      setError('Email and password are required.');
+       return;
+     }
++
+     if (password !== confirmPassword) {
+-      setError('Passwords do not match');
++      setError('Passwords do not match.');
+       return;
+     }
+-    if (password.length < 8) {
+-      setError('Use at least 8 characters for your password');
+-      return;
+-    }
+-    setLoading(true);
+-    void (async () => {
+-      try {
+-        const result = await signUpWithEmailPassword(normalizedEmail, password, displayName.trim());
+-        if (result.userConfirmed) {
+-          const tokens = await signInWithEmailPassword(normalizedEmail, password);
+-          dispatch(
+-            setCredentials({
+-              accessToken: tokens.accessToken,
+-              idToken: tokens.idToken,
+-              refreshToken: tokens.refreshToken,
+-            })
+-          );
+-          try {
+-            await getMyProfile(tokens.accessToken);
+-          } catch {
+-            /* Row may still be missing if GET fails */
+-          }
+-          try {
+-            await patchMyProfile(tokens.accessToken, {
+-              display_name: displayName.trim() || normalizedEmail.split('@')[0] || 'User',
+-            });
+-          } catch {
+-            /* Display name optional if PATCH fails after GET created the row */
+-          }
+-          router.replace('/(tabs)/events');
+-        } else {
+-          setAwaitingVerification(true);
+-          setInfo('Check your email for a verification code, then enter it below.');
+-        }
+-      } catch (err: unknown) {
+-        setError(cognitoMessage(err));
+-      } finally {
+-        setLoading(false);
+-      }
+-    })();
+-  };
+ 
+-  const handleConfirmCode = () => {
+-    setError(null);
+-    setInfo(null);
+-    if (!verificationCode.trim()) {
+-      setError('Enter the verification code');
++    if (password.length < 4) {
++      setError('Use at least 4 characters for your password.');
+       return;
+     }
++
+     setLoading(true);
+     void (async () => {
+       try {
+-        await confirmSignUp(normalizedEmail, verificationCode);
++        await signUpWithEmailPassword(normalizedEmail, password, displayName.trim());
+         const tokens = await signInWithEmailPassword(normalizedEmail, password);
++
+         dispatch(
+           setCredentials({
+             accessToken: tokens.accessToken,
+@@ -118,12 +73,9 @@
+             refreshToken: tokens.refreshToken,
+           })
+         );
++
+         try {
+           await getMyProfile(tokens.accessToken);
+-        } catch {
+-          /* non-fatal */
+-        }
+-        try {
+           await patchMyProfile(tokens.accessToken, {
+             display_name: displayName.trim() || normalizedEmail.split('@')[0] || 'User',
+           });
+@@ -128,11 +80,12 @@
+             display_name: displayName.trim() || normalizedEmail.split('@')[0] || 'User',
+           });
+         } catch {
+-          /* non-fatal */
++          // Profile setup is helpful, but the account can still continue into the app.
+         }
++
+         router.replace('/(tabs)/events');
+       } catch (err: unknown) {
+-        setError(cognitoMessage(err));
++        setError(authMessage(err));
+       } finally {
+         setLoading(false);
+       }
+@@ -139,22 +92,6 @@
+     })();
+   };
+ 
+-  const handleResend = () => {
+-    setError(null);
+-    setInfo(null);
+-    setLoading(true);
+-    void (async () => {
+-      try {
+-        await resendSignUpCode(normalizedEmail);
+-        setInfo('A new code was sent to your email.');
+-      } catch (err: unknown) {
+-        setError(cognitoMessage(err));
+-      } finally {
+-        setLoading(false);
+-      }
+-    })();
+-  };
+-
+   return (
+     <View style={styles.container}>
+       <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
+@@ -160,92 +97,73 @@
+       <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
+         <Container>
+           <View style={styles.inner}>
+-            <Text style={styles.title}>Sign Up</Text>
+-            <Text style={styles.subtitle}>Create an account with your email.</Text>
++            <Text style={styles.title}>Create Demo Account</Text>
++            <Text style={styles.subtitle}>
++              Sign up locally. No Cognito setup is required for the class demo.
++            </Text>
+ 
+-            {!awaitingVerification ? (
+-              <>
+-                <Text style={styles.label}>Display name</Text>
+-                <TextInput
+-                  style={styles.input}
+-                  value={displayName}
+-                  onChangeText={setDisplayName}
+-                  placeholder="How you want to appear"
+-                  placeholderTextColor="#999"
+-                  autoCapitalize="words"
+-                  editable={!loading}
+-                />
++            <Text style={styles.label}>Display name</Text>
++            <TextInput
++              style={styles.input}
++              value={displayName}
++              onChangeText={setDisplayName}
++              placeholder="How you want to appear"
++              placeholderTextColor="#999"
++              autoCapitalize="words"
++              editable={!loading}
++            />
+ 
+-                <Text style={styles.label}>Email</Text>
+-                <TextInput
+-                  style={styles.input}
+-                  value={email}
+-                  onChangeText={setEmail}
+-                  placeholder="you@example.com"
+-                  placeholderTextColor="#999"
+-                  autoCapitalize="none"
+-                  keyboardType="email-address"
+-                  autoComplete="email"
+-                  editable={!loading}
+-                />
++            <Text style={styles.label}>Email</Text>
++            <TextInput
++              style={styles.input}
++              value={email}
++              onChangeText={setEmail}
++              placeholder="you@example.com"
++              placeholderTextColor="#999"
++              autoCapitalize="none"
++              keyboardType="email-address"
++              autoComplete="email"
++              editable={!loading}
++            />
+ 
+-                <Text style={styles.label}>Password</Text>
+-                <TextInput
+-                  style={styles.input}
+-                  value={password}
+-                  onChangeText={setPassword}
+-                  placeholder="At least 8 characters"
+-                  placeholderTextColor="#999"
+-                  secureTextEntry
+-                  autoCapitalize="none"
+-                  autoComplete="new-password"
+-                  editable={!loading}
+-                />
++            <Text style={styles.label}>Password</Text>
++            <TextInput
++              style={styles.input}
++              value={password}
++              onChangeText={setPassword}
++              placeholder="Choose any password"
++              placeholderTextColor="#999"
++              secureTextEntry
++              autoCapitalize="none"
++              autoComplete="new-password"
++              editable={!loading}
++            />
+ 
+-                <Text style={styles.label}>Confirm password</Text>
+-                <TextInput
+-                  style={styles.input}
+-                  value={confirmPassword}
+-                  onChangeText={setConfirmPassword}
+-                  placeholder="Repeat password"
+-                  placeholderTextColor="#999"
+-                  secureTextEntry
+-                  autoCapitalize="none"
+-                  autoComplete="new-password"
+-                  editable={!loading}
+-                />
+-              </>
+-            ) : (
+-              <>
+-                <Text style={styles.label}>Verification code</Text>
+-                <TextInput
+-                  style={styles.input}
+-                  value={verificationCode}
+-                  onChangeText={setVerificationCode}
+-                  placeholder="Code from email"
+-                  placeholderTextColor="#999"
+-                  autoCapitalize="none"
+-                  keyboardType="number-pad"
+-                  editable={!loading}
+-                />
+-                <Pressable onPress={handleResend} disabled={loading} style={styles.secondaryBtn}>
+-                  <Text style={styles.secondaryBtnText}>Resend code</Text>
+-                </Pressable>
+-              </>
+-            )}
++            <Text style={styles.label}>Confirm password</Text>
++            <TextInput
++              style={styles.input}
++              value={confirmPassword}
++              onChangeText={setConfirmPassword}
++              placeholder="Repeat password"
++              placeholderTextColor="#999"
++              secureTextEntry
++              autoCapitalize="none"
++              autoComplete="new-password"
++              editable={!loading}
++            />
+ 
+             {error ? <Text style={styles.error}>{error}</Text> : null}
+-            {info ? <Text style={styles.info}>{info}</Text> : null}
+ 
+             {loading ? (
+               <ActivityIndicator style={styles.spinner} />
+-            ) : !awaitingVerification ? (
+-              <Button title="Create account" onPress={handleSignUp} style={styles.primaryBtn} />
+             ) : (
+-              <Button title="Verify & continue" onPress={handleConfirmCode} style={styles.primaryBtn} />
++              <Button title="Create account" onPress={handleSignUp} style={styles.primaryBtn} />
+             )}
+ 
+-            <Pressable onPress={() => router.push('/(auth)')} disabled={loading} style={styles.linkWrap}>
++            <Pressable
++              onPress={() => router.push('/(auth)')}
++              disabled={loading}
++              style={styles.linkWrap}>
+               <Text style={styles.link}>Already have an account? Sign in</Text>
+             </Pressable>
+           </View>
+@@ -274,6 +192,7 @@
+     color: '#666',
+     marginBottom: 24,
+     textAlign: 'center',
++    lineHeight: 22,
+   },
+   label: {
+     fontSize: 16,
+@@ -292,9 +211,6 @@
+   primaryBtn: { marginTop: 24, marginHorizontal: 0 },
+   spinner: { marginTop: 24 },
+   error: { marginTop: 16, color: '#c00', fontSize: 14 },
+-  info: { marginTop: 12, color: '#1565c0', fontSize: 14 },
+-  secondaryBtn: { marginTop: 12, alignSelf: 'flex-start' },
+-  secondaryBtnText: { color: '#1565c0', fontSize: 15, fontWeight: '600' },
+   linkWrap: { marginTop: 20, alignItems: 'center' },
+   link: { fontSize: 16, color: '#1565c0', fontWeight: '600' },
+ });
+diff --git a/expo-auction-frontend/app/(tabs)/_layout.tsx b/expo-auction-frontend/app/(tabs)/_layout.tsx
+--- a/expo-auction-frontend/app/(tabs)/_layout.tsx
++++ b/expo-auction-frontend/app/(tabs)/_layout.tsx
+@@ -33,12 +33,6 @@
+           href: null,
+         }}
+       />
+-      <Tabs.Screen
+-        name="itemCheckout/[itemId]"
+-        options={{
+-          href: null,
+-        }}
+-      />
+     </Tabs>
+   );
+ }
+diff --git a/expo-auction-frontend/app/(tabs)/addEvent.tsx b/expo-auction-frontend/app/(tabs)/addEvent.tsx
+--- a/expo-auction-frontend/app/(tabs)/addEvent.tsx
++++ b/expo-auction-frontend/app/(tabs)/addEvent.tsx
+@@ -41,6 +41,14 @@
+   return d.toISOString().slice(0, 16);
+ }
+ 
++function toApiDateTime(value: string): string | null {
++  const parsed = new Date(value);
++  if (Number.isNaN(parsed.getTime())) {
++    return null;
++  }
++  return parsed.toISOString();
++}
++
+ export default function AddEventScreen() {
+   const router = useRouter();
+   const dispatch = useAppDispatch();
+@@ -73,6 +81,13 @@
+       return;
+     }
+ 
++    const apiStart = toApiDateTime(startDatetime);
++    const apiEnd = toApiDateTime(endDatetime);
++    if (!apiStart || !apiEnd) {
++      Alert.alert('Invalid date', 'Use the format YYYY-MM-DDTHH:mm for both dates.');
++      return;
++    }
++
+     void dispatch(
+       createEvent({
+         name: name.trim(),
+@@ -79,8 +94,8 @@
+         city: city.trim(),
+         state: state.trim(),
+         zip_code: zipCode.trim(),
+-        start_datetime: startDatetime,
+-        end_datetime: endDatetime,
++        start_datetime: apiStart,
++        end_datetime: apiEnd,
+         is_active: isActive,
+       })
+     )
+@@ -97,13 +112,11 @@
+     <KeyboardAvoidingView
+       style={styles.container}
+       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+-      keyboardVerticalOffset={Platform.OS === 'ios' ? 64 : 0}
+-    >
++      keyboardVerticalOffset={Platform.OS === 'ios' ? 64 : 0}>
+       <ScrollView
+         style={styles.scroll}
+         contentContainerStyle={styles.scrollContent}
+-        keyboardShouldPersistTaps="handled"
+-      >
++        keyboardShouldPersistTaps="handled">
+         <Text style={styles.title}>Add Auction Event</Text>
+ 
+         {!accessToken ? (
+@@ -109,8 +122,8 @@
+         {!accessToken ? (
+           <View style={styles.warnBanner}>
+             <Text style={styles.warnText}>
+-              You are not signed in. Add Event will not call the API until you sign in (web reloads clear
+-              the session).
++              You are not signed in. Add Event will not call the API until you sign in (web reloads
++              clear the session).
+             </Text>
+             <Pressable onPress={() => router.replace('/(auth)')} style={styles.warnLink}>
+               <Text style={styles.warnLinkText}>Go to sign in</Text>
+diff --git a/expo-auction-frontend/app/(tabs)/addItem.tsx b/expo-auction-frontend/app/(tabs)/addItem.tsx
+--- a/expo-auction-frontend/app/(tabs)/addItem.tsx
++++ b/expo-auction-frontend/app/(tabs)/addItem.tsx
+@@ -144,13 +144,11 @@
+     <KeyboardAvoidingView
+       style={styles.container}
+       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+-      keyboardVerticalOffset={Platform.OS === 'ios' ? 64 : 0}
+-    >
++      keyboardVerticalOffset={Platform.OS === 'ios' ? 64 : 0}>
+       <ScrollView
+         style={styles.scroll}
+         contentContainerStyle={styles.scrollContent}
+-        keyboardShouldPersistTaps="handled"
+-      >
++        keyboardShouldPersistTaps="handled">
+         <Text style={styles.title}>Add Auction Item</Text>
+ 
+         {!accessToken ? (
+@@ -156,7 +154,8 @@
+         {!accessToken ? (
+           <View style={styles.warnBanner}>
+             <Text style={styles.warnText}>
+-              You are not signed in. Adding items and generating descriptions require authentication.
++              You are not signed in. Adding items and generating descriptions require
++              authentication.
+             </Text>
+           </View>
+         ) : null}
+@@ -191,7 +190,7 @@
+         {generating ? (
+           <View style={styles.generateLoadingRow}>
+             <ActivityIndicator />
+-            <Text style={styles.generateLoadingText}>Generating description…</Text>
++            <Text style={styles.generateLoadingText}>Generating description...</Text>
+           </View>
+         ) : (
+           <>
+@@ -301,4 +300,3 @@
+     marginBottom: 12,
+   },
+ });
+-
+diff --git a/expo-auction-frontend/app/(tabs)/event/[id].tsx b/expo-auction-frontend/app/(tabs)/event/[id].tsx
+--- a/expo-auction-frontend/app/(tabs)/event/[id].tsx
++++ b/expo-auction-frontend/app/(tabs)/event/[id].tsx
+@@ -1,7 +1,7 @@
+ import { useLocalSearchParams, useRouter } from 'expo-router';
+-import { useEffect } from 'react';
+-import { StyleSheet, Text, View, ScrollView } from 'react-native';
+-import { Button } from 'react-native-paper';
++import { useEffect, useMemo } from 'react';
++import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native';
++import { Button, useTheme } from 'react-native-paper';
+ 
+ import type { AuctionItem } from '@/constants/auctionItems';
+ import type { AuctionEvent } from '@/constants/events';
+@@ -7,7 +7,18 @@
+ import type { AuctionEvent } from '@/constants/events';
+ import { useAppDispatch, useAppSelector } from '@/state/hooks';
+ import { displayNameForSub, selectCurrentUser } from '@/state/slices/authSlice';
+-import { fetchAuctionItems, selectAuctionItemsByEventId } from '@/state/slices/auctionItemsSlice';
++import {
++  fetchAuctionItems,
++  selectAuctionItemsByEventId,
++  selectAuctionItemsError,
++  selectAuctionItemsLoading,
++} from '@/state/slices/auctionItemsSlice';
++import {
++  fetchEvents,
++  selectEvents,
++  selectEventsError,
++  selectEventsLoading,
++} from '@/state/slices/eventsSlice';
+ 
+ function formatDateTime(iso: string) {
+   return new Date(iso).toLocaleString(undefined, {
+@@ -16,17 +27,10 @@
+   });
+ }
+ 
+-function ItemCard({
+-  item,
+-  ownerLabel,
+-  onBuy,
+-}: {
+-  item: AuctionItem;
+-  ownerLabel: string;
+-  onBuy: () => void;
+-}) {
++function ItemCard({ item, ownerLabel }: { item: AuctionItem; ownerLabel: string }) {
+   const descriptionSnippet =
+-    item.description.length > 80 ? `${item.description.slice(0, 80)}…` : item.description;
++    item.description.length > 100 ? `${item.description.slice(0, 100)}...` : item.description;
++
+   return (
+     <View style={styles.card}>
+       <Text style={styles.cardTitle}>{item.name}</Text>
+@@ -33,16 +37,9 @@
+       <Text style={styles.cardSeller}>Seller: {ownerLabel}</Text>
+       <Text style={styles.cardDescription}>{descriptionSnippet}</Text>
+       <View style={styles.cardRow}>
+-        <Text style={styles.cardPrice}>
+-          ${item.current_price.toFixed(2)} {item.current_price > item.starting_price && '(current)'}
+-        </Text>
++        <Text style={styles.cardPrice}>${item.current_price.toFixed(2)}</Text>
+         <Text style={styles.cardStatus}>{item.status}</Text>
+       </View>
+-      {item.status === 'published' ? (
+-        <Button mode="contained" compact onPress={onBuy} style={styles.buyButton}>
+-          Buy
+-        </Button>
+-      ) : null}
+     </View>
+   );
+ }
+@@ -49,28 +46,62 @@
+ 
+ export default function EventItemScreen() {
+   const router = useRouter();
++  const theme = useTheme();
+   const dispatch = useAppDispatch();
+-  const { eventJson } = useLocalSearchParams<{ id: string; eventJson?: string }>();
+-  let event: AuctionEvent | null = null;
+-  if (eventJson) {
++  const { id, eventJson } = useLocalSearchParams<{ id?: string; eventJson?: string }>();
++
++  const events = useAppSelector(selectEvents);
++  const eventsLoading = useAppSelector(selectEventsLoading);
++  const eventsError = useAppSelector(selectEventsError);
++  const itemsLoading = useAppSelector(selectAuctionItemsLoading);
++  const itemsError = useAppSelector(selectAuctionItemsError);
++  const currentUser = useAppSelector(selectCurrentUser);
++
++  const eventId = useMemo(() => {
++    const parsed = id ? Number(id) : NaN;
++    return Number.isFinite(parsed) ? parsed : null;
++  }, [id]);
++
++  const routeEvent = useMemo(() => {
++    if (!eventJson) return null;
+     try {
+-      event = JSON.parse(eventJson) as AuctionEvent;
++      return JSON.parse(eventJson) as AuctionEvent;
+     } catch {
+-      event = null;
++      return null;
+     }
+-  }
++  }, [eventJson]);
+ 
+-  const itemsForEvent = useAppSelector(selectAuctionItemsByEventId(event?.id ?? 0));
+-  const currentUser = useAppSelector(selectCurrentUser);
++  const storeEvent =
++    eventId === null ? null : (events.find((candidate) => candidate.id === eventId) ?? null);
++  const event = routeEvent ?? storeEvent;
+ 
++  const itemsForEvent = useAppSelector(selectAuctionItemsByEventId(eventId ?? routeEvent?.id ?? 0));
++
+   useEffect(() => {
++    void dispatch(fetchEvents());
+     void dispatch(fetchAuctionItems());
+   }, [dispatch]);
+ 
++  if (eventId === null) {
++    return (
++      <View style={styles.centered}>
++        <Text style={styles.error}>Event id is missing.</Text>
++      </View>
++    );
++  }
++
++  if (!event && eventsLoading) {
++    return (
++      <View style={styles.centered}>
++        <ActivityIndicator size="large" color={theme.colors.primary} />
++      </View>
++    );
++  }
++
+   if (!event) {
+     return (
+-      <View style={styles.container}>
+-        <Text style={styles.error}>Event not found.</Text>
++      <View style={styles.centered}>
++        <Text style={styles.error}>{eventsError || 'Event not found.'}</Text>
+       </View>
+     );
+   }
+@@ -78,6 +109,7 @@
+   return (
+     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+       <Text style={styles.title}>{event.name}</Text>
++
+       <View style={styles.section}>
+         <Text style={styles.label}>Location</Text>
+         <Text style={styles.value}>
+@@ -84,6 +116,7 @@
+           {event.city}, {event.state} {event.zip_code}
+         </Text>
+       </View>
++
+       <View style={styles.section}>
+         <Text style={styles.label}>Starts</Text>
+         <Text style={styles.value}>{formatDateTime(event.start_datetime)}</Text>
+@@ -88,6 +121,7 @@
+         <Text style={styles.label}>Starts</Text>
+         <Text style={styles.value}>{formatDateTime(event.start_datetime)}</Text>
+       </View>
++
+       <View style={styles.section}>
+         <Text style={styles.label}>Ends</Text>
+         <Text style={styles.value}>{formatDateTime(event.end_datetime)}</Text>
+@@ -92,6 +126,7 @@
+         <Text style={styles.label}>Ends</Text>
+         <Text style={styles.value}>{formatDateTime(event.end_datetime)}</Text>
+       </View>
++
+       <View style={styles.section}>
+         <Text style={styles.label}>Status</Text>
+         <Text style={styles.value}>{event.is_active ? 'Active' : 'Ended'}</Text>
+@@ -96,6 +131,7 @@
+         <Text style={styles.label}>Status</Text>
+         <Text style={styles.value}>{event.is_active ? 'Active' : 'Ended'}</Text>
+       </View>
++
+       <View style={styles.section}>
+         <Text style={styles.label}>Organizer</Text>
+         <Text style={styles.value}>
+@@ -102,6 +138,7 @@
+           {displayNameForSub(event.created_by_sub, currentUser, event.created_by_display_name)}
+         </Text>
+       </View>
++
+       <View style={styles.section}>
+         <Text style={styles.label}>Created</Text>
+         <Text style={styles.value}>{formatDateTime(event.created_at)}</Text>
+@@ -106,6 +143,7 @@
+         <Text style={styles.label}>Created</Text>
+         <Text style={styles.value}>{formatDateTime(event.created_at)}</Text>
+       </View>
++
+       <View style={styles.section}>
+         <Text style={styles.label}>Updated</Text>
+         <Text style={styles.value}>{formatDateTime(event.updated_at)}</Text>
+@@ -126,7 +164,15 @@
+             Add
+           </Button>
+         </View>
+-        {itemsForEvent.length === 0 ? (
++
++        {itemsLoading ? (
++          <View style={styles.itemsLoadingRow}>
++            <ActivityIndicator color={theme.colors.primary} />
++            <Text style={styles.loadingText}>Loading items...</Text>
++          </View>
++        ) : itemsError ? (
++          <Text style={styles.error}>{itemsError}</Text>
++        ) : itemsForEvent.length === 0 ? (
+           <Text style={styles.emptyItems}>No items in this auction yet.</Text>
+         ) : (
+           itemsForEvent.map((item) => (
+@@ -134,12 +180,6 @@
+               key={item.id}
+               item={item}
+               ownerLabel={displayNameForSub(item.owner_sub, currentUser, item.owner_display_name)}
+-              onBuy={() =>
+-                router.push({
+-                  pathname: '/(tabs)/itemCheckout/[itemId]',
+-                  params: { itemId: String(item.id) },
+-                })
+-              }
+             />
+           ))
+         )}
+@@ -157,6 +197,13 @@
+     padding: 20,
+     paddingBottom: 40,
+   },
++  centered: {
++    flex: 1,
++    alignItems: 'center',
++    justifyContent: 'center',
++    padding: 24,
++    backgroundColor: 'white',
++  },
+   title: {
+     fontSize: 24,
+     fontWeight: '700',
+@@ -177,9 +224,9 @@
+     color: '#111',
+   },
+   error: {
+-    fontSize: 16,
+-    color: '#666',
+-    padding: 20,
++    fontSize: 15,
++    color: '#b00020',
++    lineHeight: 22,
+   },
+   sectionTitle: {
+     fontSize: 18,
+@@ -184,7 +231,6 @@
+   sectionTitle: {
+     fontSize: 18,
+     fontWeight: '600',
+-    marginBottom: 12,
+     color: '#111',
+   },
+   sectionHeaderRow: {
+@@ -191,6 +237,7 @@
+     flexDirection: 'row',
+     alignItems: 'center',
+     justifyContent: 'space-between',
++    marginBottom: 12,
+   },
+   emptyItems: {
+     fontSize: 15,
+@@ -197,6 +244,14 @@
+     color: '#666',
+     fontStyle: 'italic',
+   },
++  itemsLoadingRow: {
++    flexDirection: 'row',
++    alignItems: 'center',
++    gap: 10,
++  },
++  loadingText: {
++    color: '#555',
++  },
+   card: {
+     backgroundColor: '#f8f8f8',
+     borderRadius: 12,
+@@ -238,8 +293,4 @@
+     color: '#666',
+     textTransform: 'capitalize',
+   },
+-  buyButton: {
+-    marginTop: 12,
+-    alignSelf: 'flex-start',
+-  },
+ });
+diff --git a/expo-auction-frontend/app/(tabs)/events.tsx b/expo-auction-frontend/app/(tabs)/events.tsx
+--- a/expo-auction-frontend/app/(tabs)/events.tsx
++++ b/expo-auction-frontend/app/(tabs)/events.tsx
+@@ -1,7 +1,7 @@
+ import { useRouter } from 'expo-router';
+ import { useEffect } from 'react';
+-import { StyleSheet, View, FlatList, TouchableOpacity, ListRenderItem } from 'react-native';
+-import { Card, Text, Button, ActivityIndicator, useTheme } from 'react-native-paper';
++import { FlatList, ListRenderItem, StyleSheet, TouchableOpacity, View } from 'react-native';
++import { ActivityIndicator, Button, Card, Text, useTheme } from 'react-native-paper';
+ 
+ import type { AuctionEvent } from '@/constants/events';
+ import { useAppDispatch, useAppSelector } from '@/state/hooks';
+@@ -9,13 +9,13 @@
+ import {
+   fetchEvents,
+   selectEvents,
+-  selectEventsLoading,
+   selectEventsError,
++  selectEventsLoading,
+ } from '@/state/slices/eventsSlice';
+ 
+ function formatEventDate(iso: string) {
+-  const d = new Date(iso);
+-  return d.toLocaleDateString(undefined, {
++  const date = new Date(iso);
++  return date.toLocaleDateString(undefined, {
+     month: 'short',
+     day: 'numeric',
+     year: 'numeric',
+@@ -46,13 +46,13 @@
+           Organizer: {organizerLabel}
+         </Text>
+         <Text variant="bodySmall" style={styles.cardDate}>
+-          {formatEventDate(event.start_datetime)} – {formatEventDate(event.end_datetime)}
++          {formatEventDate(event.start_datetime)} - {formatEventDate(event.end_datetime)}
+         </Text>
+-        {!event.is_active && (
++        {!event.is_active ? (
+           <Text variant="labelMedium" style={styles.cardBadge}>
+             Ended
+           </Text>
+-        )}
++        ) : null}
+       </Card.Content>
+     </Card>
+   </TouchableOpacity>
+@@ -107,7 +107,9 @@
+               <View style={styles.centered}>
+                 <ActivityIndicator size="large" color={theme.colors.primary} />
+               </View>
+-            ) : null
++            ) : (
++              <Text style={styles.emptyText}>No events yet. Create one to get started.</Text>
++            )
+           }
+           ListHeaderComponent={
+             <View style={styles.header}>
+@@ -116,7 +118,7 @@
+                   Events
+                 </Text>
+                 <Text variant="bodySmall" style={styles.subtitle}>
+-                  Open an event to see its auction items and the Stripe Buy demo.
++                  Open an event to see its items, or add a new event for the demo.
+                 </Text>
+               </View>
+               <Button mode="contained" onPress={() => router.push('/(tabs)/addEvent')} compact>
+@@ -138,6 +140,7 @@
+   listContent: {
+     padding: 16,
+     paddingBottom: 32,
++    flexGrow: 1,
+   },
+   header: {
+     flexDirection: 'row',
+@@ -188,4 +191,8 @@
+   errorText: {
+     color: '#c00',
+   },
++  emptyText: {
++    color: '#666',
++    fontStyle: 'italic',
++  },
+ });
+diff --git a/expo-auction-frontend/app/(tabs)/itemCheckout/[itemId].tsx b/expo-auction-frontend/app/(tabs)/itemCheckout/[itemId].tsx
+deleted file mode 100644
+--- a/expo-auction-frontend/app/(tabs)/itemCheckout/[itemId].tsx
++++ /dev/null
+@@ -1,244 +0,0 @@
+-import * as WebBrowser from 'expo-web-browser';
+-import { useLocalSearchParams, useRouter } from 'expo-router';
+-import { useCallback, useEffect, useState } from 'react';
+-import { ScrollView, StyleSheet, View } from 'react-native';
+-import { ActivityIndicator, Button, Text, TextInput, useTheme } from 'react-native-paper';
+-
+-import type { AuctionItem } from '@/constants/auctionItems';
+-import { createCheckoutSession, fetchAuctionItemById } from '@/services/paymentsApi';
+-import { useAppDispatch, useAppSelector } from '@/state/hooks';
+-import { selectAccessToken } from '@/state/slices/authSlice';
+-import { fetchAuctionItems, selectAuctionItemById } from '@/state/slices/auctionItemsSlice';
+-
+-function parseDetailMessage(raw: string): string {
+-  try {
+-    const j = JSON.parse(raw) as { detail?: unknown };
+-    if (typeof j.detail === 'string') {
+-      return j.detail;
+-    }
+-  } catch {
+-    /* ignore */
+-  }
+-  return raw;
+-}
+-
+-export default function ItemCheckoutScreen() {
+-  const router = useRouter();
+-  const theme = useTheme();
+-  const dispatch = useAppDispatch();
+-  const { itemId: itemIdParam } = useLocalSearchParams<{ itemId: string }>();
+-  const itemId = Number(itemIdParam);
+-  const token = useAppSelector(selectAccessToken);
+-
+-  const itemFromStore = useAppSelector((state) => {
+-    if (!Number.isFinite(itemId)) return undefined;
+-    return selectAuctionItemById(itemId)(state);
+-  });
+-
+-  const [item, setItem] = useState<AuctionItem | null | undefined>(itemFromStore);
+-  const [email, setEmail] = useState('');
+-  const [loadingItem, setLoadingItem] = useState(false);
+-  const [checkoutLoading, setCheckoutLoading] = useState(false);
+-  const [error, setError] = useState<string | null>(null);
+-
+-  useEffect(() => {
+-    if (!Number.isFinite(itemId)) {
+-      setItem(null);
+-      return;
+-    }
+-    if (itemFromStore) {
+-      setItem(itemFromStore);
+-      return;
+-    }
+-    let cancelled = false;
+-    setLoadingItem(true);
+-    void fetchAuctionItemById(itemId).then((row) => {
+-      if (cancelled) return;
+-      setItem(row);
+-      setLoadingItem(false);
+-      if (!row) {
+-        void dispatch(fetchAuctionItems());
+-      }
+-    });
+-    return () => {
+-      cancelled = true;
+-    };
+-  }, [dispatch, itemFromStore, itemId]);
+-
+-  const onPay = useCallback(async () => {
+-    if (!item || !Number.isFinite(itemId)) return;
+-    setError(null);
+-    setCheckoutLoading(true);
+-    try {
+-      const { checkout_url } = await createCheckoutSession({
+-        auctionItemId: item.id,
+-        customerEmail: email.trim() || undefined,
+-        accessToken: token,
+-      });
+-      await WebBrowser.openBrowserAsync(checkout_url);
+-    } catch (e) {
+-      const raw = e instanceof Error ? e.message : String(e);
+-      setError(parseDetailMessage(raw));
+-    } finally {
+-      setCheckoutLoading(false);
+-    }
+-  }, [email, item, itemId, token]);
+-
+-  if (!Number.isFinite(itemId)) {
+-    return (
+-      <View style={styles.centered}>
+-        <Text variant="bodyLarge">Invalid item.</Text>
+-        <Button onPress={() => router.back()}>Go back</Button>
+-      </View>
+-    );
+-  }
+-
+-  if (loadingItem || item === undefined) {
+-    return (
+-      <View style={styles.centered}>
+-        <ActivityIndicator size="large" color={theme.colors.primary} />
+-      </View>
+-    );
+-  }
+-
+-  if (!item) {
+-    return (
+-      <View style={styles.centered}>
+-        <Text variant="bodyLarge" style={styles.errorText}>
+-          Item not found.
+-        </Text>
+-        <Button onPress={() => router.back()}>Go back</Button>
+-      </View>
+-    );
+-  }
+-
+-  const canPay = item.status === 'published';
+-
+-  return (
+-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+-      <Text variant="headlineSmall" style={styles.title}>
+-        Checkout (Stripe test)
+-      </Text>
+-      <Text variant="titleMedium" style={styles.itemName}>
+-        {item.name}
+-      </Text>
+-      <Text variant="bodyMedium" style={styles.description}>
+-        {item.description}
+-      </Text>
+-      <Text variant="titleLarge" style={styles.price}>
+-        ${item.current_price.toFixed(2)} USD
+-      </Text>
+-      <Text variant="bodySmall" style={styles.meta}>
+-        Status: {item.status}
+-        {item.auction_event_name ? ` · Event: ${item.auction_event_name}` : ''}
+-      </Text>
+-
+-      {!canPay ? (
+-        <Text variant="bodyMedium" style={styles.warn}>
+-          This item is not available for purchase.
+-        </Text>
+-      ) : (
+-        <>
+-          <Text variant="labelLarge" style={styles.label}>
+-            Email (optional)
+-          </Text>
+-          <TextInput
+-            mode="outlined"
+-            value={email}
+-            onChangeText={setEmail}
+-            keyboardType="email-address"
+-            autoCapitalize="none"
+-            autoCorrect={false}
+-            placeholder="prefill@example.com"
+-            style={styles.input}
+-          />
+-          <Text variant="bodySmall" style={styles.hint}>
+-            Opens Stripe Checkout in the browser. Use test card 4242 4242 4242 4242 with any future
+-            expiry and CVC.
+-          </Text>
+-        </>
+-      )}
+-
+-      {error ? (
+-        <Text variant="bodyMedium" style={styles.errorText}>
+-          {error}
+-        </Text>
+-      ) : null}
+-
+-      <View style={styles.actions}>
+-        <Button mode="outlined" onPress={() => router.back()} disabled={checkoutLoading}>
+-          Cancel
+-        </Button>
+-        <Button
+-          mode="contained"
+-          onPress={() => void onPay()}
+-          loading={checkoutLoading}
+-          disabled={!canPay || checkoutLoading}>
+-          Pay with Stripe
+-        </Button>
+-      </View>
+-    </ScrollView>
+-  );
+-}
+-
+-const styles = StyleSheet.create({
+-  container: {
+-    flex: 1,
+-    backgroundColor: '#fff',
+-  },
+-  content: {
+-    padding: 20,
+-    paddingBottom: 40,
+-  },
+-  centered: {
+-    flex: 1,
+-    justifyContent: 'center',
+-    alignItems: 'center',
+-    padding: 24,
+-    backgroundColor: '#fff',
+-  },
+-  title: {
+-    marginBottom: 16,
+-  },
+-  itemName: {
+-    marginBottom: 8,
+-  },
+-  description: {
+-    marginBottom: 12,
+-    color: '#444',
+-    lineHeight: 22,
+-  },
+-  price: {
+-    marginBottom: 8,
+-  },
+-  meta: {
+-    color: '#666',
+-    marginBottom: 20,
+-  },
+-  label: {
+-    marginBottom: 8,
+-  },
+-  input: {
+-    marginBottom: 12,
+-  },
+-  hint: {
+-    color: '#666',
+-    marginBottom: 16,
+-    lineHeight: 18,
+-  },
+-  warn: {
+-    color: '#a60',
+-    marginBottom: 16,
+-  },
+-  errorText: {
+-    color: '#c00',
+-    marginBottom: 12,
+-  },
+-  actions: {
+-    flexDirection: 'row',
+-    gap: 12,
+-    justifyContent: 'flex-end',
+-    flexWrap: 'wrap',
+-    marginTop: 8,
+-  },
+-});
+diff --git a/expo-auction-frontend/app/(tabs)/items.tsx b/expo-auction-frontend/app/(tabs)/items.tsx
+--- a/expo-auction-frontend/app/(tabs)/items.tsx
++++ b/expo-auction-frontend/app/(tabs)/items.tsx
+@@ -1,7 +1,6 @@
+-import { useRouter } from 'expo-router';
+ import { useEffect } from 'react';
+-import { StyleSheet, View } from 'react-native';
+-import { ActivityIndicator, Button, Card, Text, useTheme } from 'react-native-paper';
++import { ScrollView, StyleSheet, View } from 'react-native';
++import { ActivityIndicator, Card, Text, useTheme } from 'react-native-paper';
+ 
+ import { useAppDispatch, useAppSelector } from '@/state/hooks';
+ import {
+@@ -12,7 +11,6 @@
+ } from '@/state/slices/auctionItemsSlice';
+ 
+ export default function ItemsScreen() {
+-  const router = useRouter();
+   const dispatch = useAppDispatch();
+   const theme = useTheme();
+ 
+@@ -25,19 +23,24 @@
+   }, [dispatch]);
+ 
+   return (
+-    <View style={styles.container}>
++    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+       <Text variant="headlineSmall" style={styles.title}>
+         Items
+       </Text>
++      <Text variant="bodySmall" style={styles.subtitle}>
++        All auction items currently stored in the Django SQLite database.
++      </Text>
+ 
+       {loading ? (
+-        <ActivityIndicator size="large" color={theme.colors.primary} />
++        <View style={styles.centered}>
++          <ActivityIndicator size="large" color={theme.colors.primary} />
++        </View>
+       ) : error ? (
+         <Text style={styles.errorText}>{error}</Text>
+       ) : items.length === 0 ? (
+-        <Text style={styles.emptyText}>No items yet.</Text>
++        <Text style={styles.emptyText}>No items yet. Open an event and add one.</Text>
+       ) : (
+-        items.slice(0, 30).map((item) => (
++        items.map((item) => (
+           <Card key={String(item.id)} style={styles.card} mode="elevated">
+             <Card.Content>
+               <Text variant="titleMedium">{item.name}</Text>
+@@ -42,25 +45,14 @@
+             <Card.Content>
+               <Text variant="titleMedium">{item.name}</Text>
+               <Text variant="bodySmall" style={styles.meta}>
+-                ${item.current_price.toFixed(2)} · {item.status}
++                ${item.current_price.toFixed(2)} | {item.status}
+               </Text>
+-              <Text variant="bodyMedium" numberOfLines={2}>
+-                {item.description}
+-              </Text>
+-              {item.status === 'published' ? (
+-                <Button
+-                  mode="contained"
+-                  compact
+-                  style={styles.buy}
+-                  onPress={() =>
+-                    router.push({
+-                      pathname: '/(tabs)/itemCheckout/[itemId]',
+-                      params: { itemId: String(item.id) },
+-                    })
+-                  }>
+-                  Buy
+-                </Button>
++              {item.auction_event_name ? (
++                <Text variant="bodySmall" style={styles.eventName}>
++                  Event: {item.auction_event_name}
++                </Text>
+               ) : null}
++              <Text variant="bodyMedium">{item.description}</Text>
+             </Card.Content>
+           </Card>
+         ))
+@@ -65,7 +57,7 @@
+           </Card>
+         ))
+       )}
+-    </View>
++    </ScrollView>
+   );
+ }
+ 
+@@ -72,12 +64,24 @@
+ const styles = StyleSheet.create({
+   container: {
+     flex: 1,
+-    padding: 16,
+     backgroundColor: '#f5f5f5',
+   },
++  content: {
++    padding: 16,
++    paddingBottom: 32,
++  },
++  centered: {
++    paddingVertical: 40,
++    alignItems: 'center',
++    justifyContent: 'center',
++  },
+   title: {
+-    marginBottom: 12,
++    marginBottom: 6,
+   },
++  subtitle: {
++    color: '#666',
++    marginBottom: 16,
++  },
+   card: {
+     marginBottom: 12,
+     borderRadius: 12,
+@@ -85,12 +89,12 @@
+   meta: {
+     color: '#666',
+     marginTop: 6,
++    marginBottom: 4,
++  },
++  eventName: {
++    color: '#555',
+     marginBottom: 8,
+   },
+-  buy: {
+-    marginTop: 12,
+-    alignSelf: 'flex-start',
+-  },
+   errorText: {
+     color: '#c00',
+   },
+diff --git a/expo-auction-frontend/package-lock.json b/expo-auction-frontend/package-lock.json
+--- a/expo-auction-frontend/package-lock.json
++++ b/expo-auction-frontend/package-lock.json
+@@ -11,7 +11,6 @@
+         "@expo/vector-icons": "^15.0.2",
+         "@react-navigation/native": "^7.1.6",
+         "@reduxjs/toolkit": "^2.11.2",
+-        "amazon-cognito-identity-js": "^6.3.16",
+         "expo": "^55.0.6",
+         "expo-constants": "~55.0.7",
+         "expo-font": "~55.0.4",
+@@ -43,62 +42,6 @@
+         "typescript": "~5.9.2"
+       }
+     },
+-    "node_modules/@aws-crypto/sha256-js": {
+-      "version": "1.2.2",
+-      "resolved": "https://registry.npmjs.org/@aws-crypto/sha256-js/-/sha256-js-1.2.2.tgz",
+-      "integrity": "sha512-Nr1QJIbW/afYYGzYvrF70LtaHrIRtd4TNAglX8BvlfxJLZ45SAmueIKYl5tWoNBPzp65ymXGFK0Bb1vZUpuc9g==",
+-      "license": "Apache-2.0",
+-      "dependencies": {
+-        "@aws-crypto/util": "^1.2.2",
+-        "@aws-sdk/types": "^3.1.0",
+-        "tslib": "^1.11.1"
+-      }
+-    },
+-    "node_modules/@aws-crypto/util": {
+-      "version": "1.2.2",
+-      "resolved": "https://registry.npmjs.org/@aws-crypto/util/-/util-1.2.2.tgz",
+-      "integrity": "sha512-H8PjG5WJ4wz0UXAFXeJjWCW1vkvIJ3qUUD+rGRwJ2/hj+xT58Qle2MTql/2MGzkU+1JLAFuR6aJpLAjHwhmwwg==",
+-      "license": "Apache-2.0",
+-      "dependencies": {
+-        "@aws-sdk/types": "^3.1.0",
+-        "@aws-sdk/util-utf8-browser": "^3.0.0",
+-        "tslib": "^1.11.1"
+-      }
+-    },
+-    "node_modules/@aws-sdk/types": {
+-      "version": "3.973.8",
+-      "resolved": "https://registry.npmjs.org/@aws-sdk/types/-/types-3.973.8.tgz",
+-      "integrity": "sha512-gjlAdtHMbtR9X5iIhVUvbVcy55KnznpC6bkDUWW9z915bi0ckdUr5cjf16Kp6xq0bP5HBD2xzgbL9F9Quv5vUw==",
+-      "license": "Apache-2.0",
+-      "dependencies": {
+-        "@smithy/types": "^4.14.1",
+-        "tslib": "^2.6.2"
+-      },
+-      "engines": {
+-        "node": ">=20.0.0"
+-      }
+-    },
+-    "node_modules/@aws-sdk/types/node_modules/tslib": {
+-      "version": "2.8.1",
+-      "resolved": "https://registry.npmjs.org/tslib/-/tslib-2.8.1.tgz",
+-      "integrity": "sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==",
+-      "license": "0BSD"
+-    },
+-    "node_modules/@aws-sdk/util-utf8-browser": {
+-      "version": "3.259.0",
+-      "resolved": "https://registry.npmjs.org/@aws-sdk/util-utf8-browser/-/util-utf8-browser-3.259.0.tgz",
+-      "integrity": "sha512-UvFa/vR+e19XookZF8RzFZBrw2EUkQWxiBW0yYQAhvk3C+QVGl0H3ouca8LDBlBfQKXwmW3huo/59H8rwb1wJw==",
+-      "license": "Apache-2.0",
+-      "dependencies": {
+-        "tslib": "^2.3.1"
+-      }
+-    },
+-    "node_modules/@aws-sdk/util-utf8-browser/node_modules/tslib": {
+-      "version": "2.8.1",
+-      "resolved": "https://registry.npmjs.org/tslib/-/tslib-2.8.1.tgz",
+-      "integrity": "sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==",
+-      "license": "0BSD"
+-    },
+     "node_modules/@babel/code-frame": {
+       "version": "7.29.0",
+       "resolved": "https://registry.npmjs.org/@babel/code-frame/-/code-frame-7.29.0.tgz",
+@@ -3098,107 +3041,6 @@
+         "node": ">= 20.19.4"
+       }
+     },
+-    "node_modules/@react-native/babel-plugin-codegen": {
+-      "version": "0.85.2",
+-      "resolved": "https://registry.npmjs.org/@react-native/babel-plugin-codegen/-/babel-plugin-codegen-0.85.2.tgz",
+-      "integrity": "sha512-5Dqn08kRTUIxPLYju9hExI0cR1ESX+P5tEv5yv0q0UZcisRTw0VB8iUWDIph2LdY1i5Dc8PIvuaWMRNCw3vnKg==",
+-      "extraneous": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "@babel/traverse": "^7.29.0",
+-        "@react-native/codegen": "0.85.2"
+-      },
+-      "engines": {
+-        "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >= 25.0.0"
+-      }
+-    },
+-    "node_modules/@react-native/babel-preset": {
+-      "version": "0.85.2",
+-      "resolved": "https://registry.npmjs.org/@react-native/babel-preset/-/babel-preset-0.85.2.tgz",
+-      "integrity": "sha512-7d2yW23eKkVt0FbbnZLxqO7KybGLtQXOuvvcO1NUOYGtjzVh6ihNKn0TIHrhSNpMyHwYLDoiiuj95wLtcg3IwQ==",
+-      "extraneous": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "@babel/core": "^7.25.2",
+-        "@babel/plugin-proposal-export-default-from": "^7.24.7",
+-        "@babel/plugin-syntax-dynamic-import": "^7.8.3",
+-        "@babel/plugin-syntax-export-default-from": "^7.24.7",
+-        "@babel/plugin-syntax-nullish-coalescing-operator": "^7.8.3",
+-        "@babel/plugin-syntax-optional-chaining": "^7.8.3",
+-        "@babel/plugin-transform-async-generator-functions": "^7.25.4",
+-        "@babel/plugin-transform-async-to-generator": "^7.24.7",
+-        "@babel/plugin-transform-block-scoping": "^7.25.0",
+-        "@babel/plugin-transform-class-properties": "^7.25.4",
+-        "@babel/plugin-transform-classes": "^7.25.4",
+-        "@babel/plugin-transform-destructuring": "^7.24.8",
+-        "@babel/plugin-transform-flow-strip-types": "^7.25.2",
+-        "@babel/plugin-transform-for-of": "^7.24.7",
+-        "@babel/plugin-transform-modules-commonjs": "^7.24.8",
+-        "@babel/plugin-transform-named-capturing-groups-regex": "^7.24.7",
+-        "@babel/plugin-transform-nullish-coalescing-operator": "^7.24.7",
+-        "@babel/plugin-transform-optional-catch-binding": "^7.24.7",
+-        "@babel/plugin-transform-optional-chaining": "^7.24.8",
+-        "@babel/plugin-transform-private-methods": "^7.24.7",
+-        "@babel/plugin-transform-private-property-in-object": "^7.24.7",
+-        "@babel/plugin-transform-react-display-name": "^7.24.7",
+-        "@babel/plugin-transform-react-jsx": "^7.25.2",
+-        "@babel/plugin-transform-react-jsx-self": "^7.24.7",
+-        "@babel/plugin-transform-react-jsx-source": "^7.24.7",
+-        "@babel/plugin-transform-regenerator": "^7.24.7",
+-        "@babel/plugin-transform-runtime": "^7.24.7",
+-        "@babel/plugin-transform-typescript": "^7.25.2",
+-        "@babel/plugin-transform-unicode-regex": "^7.24.7",
+-        "@react-native/babel-plugin-codegen": "0.85.2",
+-        "babel-plugin-syntax-hermes-parser": "0.33.3",
+-        "babel-plugin-transform-flow-enums": "^0.0.2",
+-        "react-refresh": "^0.14.0"
+-      },
+-      "engines": {
+-        "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >= 25.0.0"
+-      },
+-      "peerDependencies": {
+-        "@babel/core": "*"
+-      }
+-    },
+-    "node_modules/@react-native/codegen": {
+-      "version": "0.85.2",
+-      "resolved": "https://registry.npmjs.org/@react-native/codegen/-/codegen-0.85.2.tgz",
+-      "integrity": "sha512-XCginmxh0//++EXVOEJHBVZxHla294FzLCFF6jXwAUjvXVhqyIKyxhABfz+r4OOmaiuWk4Rtd4arqdAzeHeprg==",
+-      "extraneous": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "@babel/core": "^7.25.2",
+-        "@babel/parser": "^7.29.0",
+-        "hermes-parser": "0.33.3",
+-        "invariant": "^2.2.4",
+-        "nullthrows": "^1.1.1",
+-        "tinyglobby": "^0.2.15",
+-        "yargs": "^17.6.2"
+-      },
+-      "engines": {
+-        "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >= 25.0.0"
+-      },
+-      "peerDependencies": {
+-        "@babel/core": "*"
+-      }
+-    },
+-    "node_modules/@react-native/codegen/node_modules/hermes-estree": {
+-      "version": "0.33.3",
+-      "resolved": "https://registry.npmjs.org/hermes-estree/-/hermes-estree-0.33.3.tgz",
+-      "integrity": "sha512-6kzYZHCk8Fy1Uc+t3HGYyJn3OL4aeqKLTyina4UFtWl8I0kSL7OmKThaiX+Uh2f8nGw3mo4Ifxg0M5Zk3/Oeqg==",
+-      "extraneous": true,
+-      "license": "MIT"
+-    },
+-    "node_modules/@react-native/codegen/node_modules/hermes-parser": {
+-      "version": "0.33.3",
+-      "resolved": "https://registry.npmjs.org/hermes-parser/-/hermes-parser-0.33.3.tgz",
+-      "integrity": "sha512-Yg3HgaG4CqgyowtYjX/FsnPAuZdHOqSMtnbpylbptsQ9nwwSKsy6uRWcGO5RK0EqiX12q8HvDWKgeAVajRO5DA==",
+-      "extraneous": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "hermes-estree": "0.33.3"
+-      }
+-    },
+     "node_modules/@react-native/community-cli-plugin": {
+       "version": "0.83.2",
+       "resolved": "https://registry.npmjs.org/@react-native/community-cli-plugin/-/community-cli-plugin-0.83.2.tgz",
+@@ -3295,381 +3137,6 @@
+         "node": ">= 20.19.4"
+       }
+     },
+-    "node_modules/@react-native/js-polyfills": {
+-      "version": "0.85.2",
+-      "resolved": "https://registry.npmjs.org/@react-native/js-polyfills/-/js-polyfills-0.85.2.tgz",
+-      "integrity": "sha512-esGEAmKVM40DV/yVmNljCKZTIeUo7qXqc+Hwffkv3TG+b3E24xyFovHrbP98gGxZr2ZsEyx+2sKLdXF5asY5nw==",
+-      "extraneous": true,
+-      "license": "MIT",
+-      "engines": {
+-        "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >= 25.0.0"
+-      }
+-    },
+-    "node_modules/@react-native/metro-babel-transformer": {
+-      "version": "0.85.2",
+-      "resolved": "https://registry.npmjs.org/@react-native/metro-babel-transformer/-/metro-babel-transformer-0.85.2.tgz",
+-      "integrity": "sha512-lU9XOGahpHvQff30H5lnvh9RYbVwC1zpSHpl84E+7BD2zj0FvW+pD7MBh7CWbmbWmegjtAb+U/2bokXcDVA+jA==",
+-      "extraneous": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "@babel/core": "^7.25.2",
+-        "@react-native/babel-preset": "0.85.2",
+-        "hermes-parser": "0.33.3",
+-        "nullthrows": "^1.1.1"
+-      },
+-      "engines": {
+-        "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >= 25.0.0"
+-      },
+-      "peerDependencies": {
+-        "@babel/core": "*"
+-      }
+-    },
+-    "node_modules/@react-native/metro-babel-transformer/node_modules/hermes-estree": {
+-      "version": "0.33.3",
+-      "resolved": "https://registry.npmjs.org/hermes-estree/-/hermes-estree-0.33.3.tgz",
+-      "integrity": "sha512-6kzYZHCk8Fy1Uc+t3HGYyJn3OL4aeqKLTyina4UFtWl8I0kSL7OmKThaiX+Uh2f8nGw3mo4Ifxg0M5Zk3/Oeqg==",
+-      "extraneous": true,
+-      "license": "MIT"
+-    },
+-    "node_modules/@react-native/metro-babel-transformer/node_modules/hermes-parser": {
+-      "version": "0.33.3",
+-      "resolved": "https://registry.npmjs.org/hermes-parser/-/hermes-parser-0.33.3.tgz",
+-      "integrity": "sha512-Yg3HgaG4CqgyowtYjX/FsnPAuZdHOqSMtnbpylbptsQ9nwwSKsy6uRWcGO5RK0EqiX12q8HvDWKgeAVajRO5DA==",
+-      "extraneous": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "hermes-estree": "0.33.3"
+-      }
+-    },
+-    "node_modules/@react-native/metro-config": {
+-      "version": "0.85.2",
+-      "resolved": "https://registry.npmjs.org/@react-native/metro-config/-/metro-config-0.85.2.tgz",
+-      "integrity": "sha512-YkTIMfTPeyMUrtpQo/7zd3oybVYJCfTp8626PqoakOvEiWi9PxsUpZ8j44a5GFtOIq8Nc6WWVBiFRn/6qdi1uQ==",
+-      "extraneous": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "@react-native/js-polyfills": "0.85.2",
+-        "@react-native/metro-babel-transformer": "0.85.2",
+-        "metro-config": "^0.84.0",
+-        "metro-runtime": "^0.84.0"
+-      },
+-      "engines": {
+-        "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >= 25.0.0"
+-      }
+-    },
+-    "node_modules/@react-native/metro-config/node_modules/hermes-estree": {
+-      "version": "0.35.0",
+-      "resolved": "https://registry.npmjs.org/hermes-estree/-/hermes-estree-0.35.0.tgz",
+-      "integrity": "sha512-xVx5Opwy8Oo1I5yGpVRhCvWL/iV3M+ylksSKVNlxxD90cpDpR/AR1jLYqK8HWihm065a6UI3HeyAmYzwS8NOOg==",
+-      "extraneous": true,
+-      "license": "MIT"
+-    },
+-    "node_modules/@react-native/metro-config/node_modules/hermes-parser": {
+-      "version": "0.35.0",
+-      "resolved": "https://registry.npmjs.org/hermes-parser/-/hermes-parser-0.35.0.tgz",
+-      "integrity": "sha512-9JLjeHxBx8T4CAsydZR49PNZUaix+WpQJwu9p2010lu+7Kwl6D/7wYFFJxoz+aXkaaClp9Zfg6W6/zVlSJORaA==",
+-      "extraneous": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "hermes-estree": "0.35.0"
+-      }
+-    },
+-    "node_modules/@react-native/metro-config/node_modules/metro": {
+-      "version": "0.84.3",
+-      "resolved": "https://registry.npmjs.org/metro/-/metro-0.84.3.tgz",
+-      "integrity": "sha512-1h3lbVrE6hGf1e/764HfhPGg/bGrWMJDDh7G2rc4gFYZboVuI40BlG/y+UhtbhQDNlO/csMvrcnK0YrTlHUVew==",
+-      "extraneous": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "@babel/code-frame": "^7.29.0",
+-        "@babel/core": "^7.25.2",
+-        "@babel/generator": "^7.29.1",
+-        "@babel/parser": "^7.29.0",
+-        "@babel/template": "^7.28.6",
+-        "@babel/traverse": "^7.29.0",
+-        "@babel/types": "^7.29.0",
+-        "accepts": "^2.0.0",
+-        "chalk": "^4.0.0",
+-        "ci-info": "^2.0.0",
+-        "connect": "^3.6.5",
+-        "debug": "^4.4.0",
+-        "error-stack-parser": "^2.0.6",
+-        "flow-enums-runtime": "^0.0.6",
+-        "graceful-fs": "^4.2.4",
+-        "hermes-parser": "0.35.0",
+-        "image-size": "^1.0.2",
+-        "invariant": "^2.2.4",
+-        "jest-worker": "^29.7.0",
+-        "jsc-safe-url": "^0.2.2",
+-        "lodash.throttle": "^4.1.1",
+-        "metro-babel-transformer": "0.84.3",
+-        "metro-cache": "0.84.3",
+-        "metro-cache-key": "0.84.3",
+-        "metro-config": "0.84.3",
+-        "metro-core": "0.84.3",
+-        "metro-file-map": "0.84.3",
+-        "metro-resolver": "0.84.3",
+-        "metro-runtime": "0.84.3",
+-        "metro-source-map": "0.84.3",
+-        "metro-symbolicate": "0.84.3",
+-        "metro-transform-plugins": "0.84.3",
+-        "metro-transform-worker": "0.84.3",
+-        "mime-types": "^3.0.1",
+-        "nullthrows": "^1.1.1",
+-        "serialize-error": "^2.1.0",
+-        "source-map": "^0.5.6",
+-        "throat": "^5.0.0",
+-        "ws": "^7.5.10",
+-        "yargs": "^17.6.2"
+-      },
+-      "bin": {
+-        "metro": "src/cli.js"
+-      },
+-      "engines": {
+-        "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >= 25.0.0"
+-      }
+-    },
+-    "node_modules/@react-native/metro-config/node_modules/metro-babel-transformer": {
+-      "version": "0.84.3",
+-      "resolved": "https://registry.npmjs.org/metro-babel-transformer/-/metro-babel-transformer-0.84.3.tgz",
+-      "integrity": "sha512-svAA+yMLpeMiGcz/jKJs4oHpIGEx4nBqNEJ5AGj4CYIg1efvK+A0TjR6tgIuc6tKO5e8JmN/1lglpN2+f3/z/w==",
+-      "extraneous": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "@babel/core": "^7.25.2",
+-        "flow-enums-runtime": "^0.0.6",
+-        "hermes-parser": "0.35.0",
+-        "metro-cache-key": "0.84.3",
+-        "nullthrows": "^1.1.1"
+-      },
+-      "engines": {
+-        "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >= 25.0.0"
+-      }
+-    },
+-    "node_modules/@react-native/metro-config/node_modules/metro-cache": {
+-      "version": "0.84.3",
+-      "resolved": "https://registry.npmjs.org/metro-cache/-/metro-cache-0.84.3.tgz",
+-      "integrity": "sha512-0QElxwLaHqLZf+Xqio8QrjVbuXP/8sJfQBGSPiITlKDVXrVLefuzYVSH9Sj+QL6lrPj2gYZd/iwQh1yZuVKnLA==",
+-      "extraneous": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "exponential-backoff": "^3.1.1",
+-        "flow-enums-runtime": "^0.0.6",
+-        "https-proxy-agent": "^7.0.5",
+-        "metro-core": "0.84.3"
+-      },
+-      "engines": {
+-        "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >= 25.0.0"
+-      }
+-    },
+-    "node_modules/@react-native/metro-config/node_modules/metro-cache-key": {
+-      "version": "0.84.3",
+-      "resolved": "https://registry.npmjs.org/metro-cache-key/-/metro-cache-key-0.84.3.tgz",
+-      "integrity": "sha512-TnSL1Fdvrw+2glTdBSRmA5TL8l/i16ECjsrUdf3E5HncA+sNx8KcwDG8r+3ct1UhfYcusJypzZqTN55FZZcwGg==",
+-      "extraneous": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "flow-enums-runtime": "^0.0.6"
+-      },
+-      "engines": {
+-        "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >= 25.0.0"
+-      }
+-    },
+-    "node_modules/@react-native/metro-config/node_modules/metro-config": {
+-      "version": "0.84.3",
+-      "resolved": "https://registry.npmjs.org/metro-config/-/metro-config-0.84.3.tgz",
+-      "integrity": "sha512-JmCzZWOETR+O22q8oPBWyQppx3roU9EbkbGzD8Gf1jukQ4b5T1fTzqqHruu6K4sTiNq5zVQySmKF6bp4kVARew==",
+-      "extraneous": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "connect": "^3.6.5",
+-        "flow-enums-runtime": "^0.0.6",
+-        "jest-validate": "^29.7.0",
+-        "metro": "0.84.3",
+-        "metro-cache": "0.84.3",
+-        "metro-core": "0.84.3",
+-        "metro-runtime": "0.84.3",
+-        "yaml": "^2.6.1"
+-      },
+-      "engines": {
+-        "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >= 25.0.0"
+-      }
+-    },
+-    "node_modules/@react-native/metro-config/node_modules/metro-core": {
+-      "version": "0.84.3",
+-      "resolved": "https://registry.npmjs.org/metro-core/-/metro-core-0.84.3.tgz",
+-      "integrity": "sha512-cc0pvAa80ai1nDmqqz0P59a+0ZqCZ/YHU/3jEekZL6spFnYDfX8iDLdn9FR6kX+67rmzKxHNrbrSRFLX2AYocw==",
+-      "extraneous": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "flow-enums-runtime": "^0.0.6",
+-        "lodash.throttle": "^4.1.1",
+-        "metro-resolver": "0.84.3"
+-      },
+-      "engines": {
+-        "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >= 25.0.0"
+-      }
+-    },
+-    "node_modules/@react-native/metro-config/node_modules/metro-file-map": {
+-      "version": "0.84.3",
+-      "resolved": "https://registry.npmjs.org/metro-file-map/-/metro-file-map-0.84.3.tgz",
+-      "integrity": "sha512-1cL4m4Jv1yRUt9RJExZQLfccscdlMNOcRG6LHLtmJhf3BG9j3MujPVc7CIpKYdFl+KUl+sdjge6oO3+meKCHQA==",
+-      "extraneous": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "debug": "^4.4.0",
+-        "fb-watchman": "^2.0.0",
+-        "flow-enums-runtime": "^0.0.6",
+-        "graceful-fs": "^4.2.4",
+-        "invariant": "^2.2.4",
+-        "jest-worker": "^29.7.0",
+-        "micromatch": "^4.0.4",
+-        "nullthrows": "^1.1.1",
+-        "walker": "^1.0.7"
+-      },
+-      "engines": {
+-        "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >= 25.0.0"
+-      }
+-    },
+-    "node_modules/@react-native/metro-config/node_modules/metro-minify-terser": {
+-      "version": "0.84.3",
+-      "resolved": "https://registry.npmjs.org/metro-minify-terser/-/metro-minify-terser-0.84.3.tgz",
+-      "integrity": "sha512-3ofrG2OQyJbO9RNhCfOcl8QU7EE2WrSsnN5dFkuZaJO5+4Imujr9bUXmspeNlXRsOVk0F/rVRbEFH98lFSCkBQ==",
+-      "extraneous": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "flow-enums-runtime": "^0.0.6",
+-        "terser": "^5.15.0"
+-      },
+-      "engines": {
+-        "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >= 25.0.0"
+-      }
+-    },
+-    "node_modules/@react-native/metro-config/node_modules/metro-resolver": {
+-      "version": "0.84.3",
+-      "resolved": "https://registry.npmjs.org/metro-resolver/-/metro-resolver-0.84.3.tgz",
+-      "integrity": "sha512-pjEzGDtoM8DTHAIPK/9u9ZxszEiuRohYUVImWvgbnB91V4gqYJpQcoEYUugf2NIm1lrX5HNu0OvNqWmPBnGYjA==",
+-      "extraneous": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "flow-enums-runtime": "^0.0.6"
+-      },
+-      "engines": {
+-        "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >= 25.0.0"
+-      }
+-    },
+-    "node_modules/@react-native/metro-config/node_modules/metro-runtime": {
+-      "version": "0.84.3",
+-      "resolved": "https://registry.npmjs.org/metro-runtime/-/metro-runtime-0.84.3.tgz",
+-      "integrity": "sha512-o7HLRfMyVk9N2dUZ9VjQfB6xxUItL9Pi9WcqxURE7MEKOH6wbGt9/E92YdYLluTOtkzYAEVfdC6h6lcxqA+hMQ==",
+-      "extraneous": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "@babel/runtime": "^7.25.0",
+-        "flow-enums-runtime": "^0.0.6"
+-      },
+-      "engines": {
+-        "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >= 25.0.0"
+-      }
+-    },
+-    "node_modules/@react-native/metro-config/node_modules/metro-source-map": {
+-      "version": "0.84.3",
+-      "resolved": "https://registry.npmjs.org/metro-source-map/-/metro-source-map-0.84.3.tgz",
+-      "integrity": "sha512-jS48CeSzw78M8y6VE0f9uy3lVmfbOS677j2VCxnlmlYmnahcXuC6IhoN9K6LynNvos9517yUadcfgioju38xYQ==",
+-      "extraneous": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "@babel/traverse": "^7.29.0",
+-        "@babel/types": "^7.29.0",
+-        "flow-enums-runtime": "^0.0.6",
+-        "invariant": "^2.2.4",
+-        "metro-symbolicate": "0.84.3",
+-        "nullthrows": "^1.1.1",
+-        "ob1": "0.84.3",
+-        "source-map": "^0.5.6",
+-        "vlq": "^1.0.0"
+-      },
+-      "engines": {
+-        "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >= 25.0.0"
+-      }
+-    },
+-    "node_modules/@react-native/metro-config/node_modules/metro-symbolicate": {
+-      "version": "0.84.3",
+-      "resolved": "https://registry.npmjs.org/metro-symbolicate/-/metro-symbolicate-0.84.3.tgz",
+-      "integrity": "sha512-J9Tpo8NCycYrozRvBIUyOwGAu4xkawOsAppmTscFiaegK0WvuDGwIM53GbzVSnytCHjVAF0io5GQxpkrKTuc7g==",
+-      "extraneous": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "flow-enums-runtime": "^0.0.6",
+-        "invariant": "^2.2.4",
+-        "metro-source-map": "0.84.3",
+-        "nullthrows": "^1.1.1",
+-        "source-map": "^0.5.6",
+-        "vlq": "^1.0.0"
+-      },
+-      "bin": {
+-        "metro-symbolicate": "src/index.js"
+-      },
+-      "engines": {
+-        "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >= 25.0.0"
+-      }
+-    },
+-    "node_modules/@react-native/metro-config/node_modules/metro-transform-plugins": {
+-      "version": "0.84.3",
+-      "resolved": "https://registry.npmjs.org/metro-transform-plugins/-/metro-transform-plugins-0.84.3.tgz",
+-      "integrity": "sha512-8S3baq2XhBaafHEH5Q8sJW6tmzsEJk80qKc3RU/nZV1MsnYq94RdjTUR6AyKjQd6Rfsk1BtBxhtiNnk7mgslCg==",
+-      "extraneous": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "@babel/core": "^7.25.2",
+-        "@babel/generator": "^7.29.1",
+-        "@babel/template": "^7.28.6",
+-        "@babel/traverse": "^7.29.0",
+-        "flow-enums-runtime": "^0.0.6",
+-        "nullthrows": "^1.1.1"
+-      },
+-      "engines": {
+-        "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >= 25.0.0"
+-      }
+-    },
+-    "node_modules/@react-native/metro-config/node_modules/metro-transform-worker": {
+-      "version": "0.84.3",
+-      "resolved": "https://registry.npmjs.org/metro-transform-worker/-/metro-transform-worker-0.84.3.tgz",
+-      "integrity": "sha512-Wjba7PyYktNRsHbPmkx2J2UX32rAzcDXjCu49zPHeF/viJlYJhwRaNePQcHaCRqQ+kmgQT4ThprsnJfDj71ZMA==",
+-      "extraneous": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "@babel/core": "^7.25.2",
+-        "@babel/generator": "^7.29.1",
+-        "@babel/parser": "^7.29.0",
+-        "@babel/types": "^7.29.0",
+-        "flow-enums-runtime": "^0.0.6",
+-        "metro": "0.84.3",
+-        "metro-babel-transformer": "0.84.3",
+-        "metro-cache": "0.84.3",
+-        "metro-cache-key": "0.84.3",
+-        "metro-minify-terser": "0.84.3",
+-        "metro-source-map": "0.84.3",
+-        "metro-transform-plugins": "0.84.3",
+-        "nullthrows": "^1.1.1"
+-      },
+-      "engines": {
+-        "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >= 25.0.0"
+-      }
+-    },
+-    "node_modules/@react-native/metro-config/node_modules/ob1": {
+-      "version": "0.84.3",
+-      "resolved": "https://registry.npmjs.org/ob1/-/ob1-0.84.3.tgz",
+-      "integrity": "sha512-J7554Ef8bzmKaDY365Afq6PF+qtdnY/d5PKUQFrsKlZHV/N3OGZewVrvDrQDyX5V5NJjTpcAKtlrFZcDr+HvpQ==",
+-      "extraneous": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "flow-enums-runtime": "^0.0.6"
+-      },
+-      "engines": {
+-        "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >= 25.0.0"
+-      }
+-    },
+     "node_modules/@react-native/normalize-colors": {
+       "version": "0.83.6",
+       "resolved": "https://registry.npmjs.org/@react-native/normalize-colors/-/normalize-colors-0.83.6.tgz",
+@@ -3838,24 +3305,6 @@
+         "@sinonjs/commons": "^3.0.0"
+       }
+     },
+-    "node_modules/@smithy/types": {
+-      "version": "4.14.1",
+-      "resolved": "https://registry.npmjs.org/@smithy/types/-/types-4.14.1.tgz",
+-      "integrity": "sha512-59b5HtSVrVR/eYNei3BUj3DCPKD/G7EtDDe7OEJE7i7FtQFugYo6MxbotS8mVJkLNVf8gYaAlEBwwtJ9HzhWSg==",
+-      "license": "Apache-2.0",
+-      "dependencies": {
+-        "tslib": "^2.6.2"
+-      },
+-      "engines": {
+-        "node": ">=18.0.0"
+-      }
+-    },
+-    "node_modules/@smithy/types/node_modules/tslib": {
+-      "version": "2.8.1",
+-      "resolved": "https://registry.npmjs.org/tslib/-/tslib-2.8.1.tgz",
+-      "integrity": "sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==",
+-      "license": "0BSD"
+-    },
+     "node_modules/@standard-schema/spec": {
+       "version": "1.1.0",
+       "resolved": "https://registry.npmjs.org/@standard-schema/spec/-/spec-1.1.0.tgz",
+@@ -4686,19 +4135,6 @@
+         "url": "https://github.com/sponsors/epoberezkin"
+       }
+     },
+-    "node_modules/amazon-cognito-identity-js": {
+-      "version": "6.3.16",
+-      "resolved": "https://registry.npmjs.org/amazon-cognito-identity-js/-/amazon-cognito-identity-js-6.3.16.tgz",
+-      "integrity": "sha512-HPGSBGD6Q36t99puWh0LnptxO/4icnk2kqIQ9cTJ2tFQo5NMUnWQIgtrTAk8nm+caqUbjDzXzG56GBjI2tS6jQ==",
+-      "license": "Apache-2.0",
+-      "dependencies": {
+-        "@aws-crypto/sha256-js": "1.2.2",
+-        "buffer": "4.9.2",
+-        "fast-base64-decode": "^1.0.0",
+-        "isomorphic-unfetch": "^3.0.0",
+-        "js-cookie": "^2.2.1"
+-      }
+-    },
+     "node_modules/anser": {
+       "version": "1.4.10",
+       "resolved": "https://registry.npmjs.org/anser/-/anser-1.4.10.tgz",
+@@ -5109,33 +4545,6 @@
+       "integrity": "sha512-SPD0J6qjJn8231i0HZhlAGH6NORe+QvRSQM2mwQEzJ2Fb3E4ruWTiiicPlHjmeWShDXLcvoorOCXjeR7k/lyWA==",
+       "license": "MIT"
+     },
+-    "node_modules/babel-plugin-syntax-hermes-parser": {
+-      "version": "0.33.3",
+-      "resolved": "https://registry.npmjs.org/babel-plugin-syntax-hermes-parser/-/babel-plugin-syntax-hermes-parser-0.33.3.tgz",
+-      "integrity": "sha512-/Z9xYdaJ1lC0pT9do6TqCqhOSLfZ5Ot8D5za1p+feEfWYupCOfGbhhEXN9r2ZgJtDNUNRw/Z+T2CvAGKBqtqWA==",
+-      "extraneous": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "hermes-parser": "0.33.3"
+-      }
+-    },
+-    "node_modules/babel-plugin-syntax-hermes-parser/node_modules/hermes-estree": {
+-      "version": "0.33.3",
+-      "resolved": "https://registry.npmjs.org/hermes-estree/-/hermes-estree-0.33.3.tgz",
+-      "integrity": "sha512-6kzYZHCk8Fy1Uc+t3HGYyJn3OL4aeqKLTyina4UFtWl8I0kSL7OmKThaiX+Uh2f8nGw3mo4Ifxg0M5Zk3/Oeqg==",
+-      "extraneous": true,
+-      "license": "MIT"
+-    },
+-    "node_modules/babel-plugin-syntax-hermes-parser/node_modules/hermes-parser": {
+-      "version": "0.33.3",
+-      "resolved": "https://registry.npmjs.org/hermes-parser/-/hermes-parser-0.33.3.tgz",
+-      "integrity": "sha512-Yg3HgaG4CqgyowtYjX/FsnPAuZdHOqSMtnbpylbptsQ9nwwSKsy6uRWcGO5RK0EqiX12q8HvDWKgeAVajRO5DA==",
+-      "extraneous": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "hermes-estree": "0.33.3"
+-      }
+-    },
+     "node_modules/babel-plugin-transform-flow-enums": {
+       "version": "0.0.2",
+       "resolved": "https://registry.npmjs.org/babel-plugin-transform-flow-enums/-/babel-plugin-transform-flow-enums-0.0.2.tgz",
+@@ -5552,17 +4961,6 @@
+         "node-int64": "^0.4.0"
+       }
+     },
+-    "node_modules/buffer": {
+-      "version": "4.9.2",
+-      "resolved": "https://registry.npmjs.org/buffer/-/buffer-4.9.2.tgz",
+-      "integrity": "sha512-xq+q3SRMOxGivLhBNaUdC64hDTQwejJ+H0T/NB1XMtTVEwNTrfFF3gAxiyW0Bu/xWEGhjVKgUcMhCrUy2+uCWg==",
+-      "license": "MIT",
+-      "dependencies": {
+-        "base64-js": "^1.0.2",
+-        "ieee754": "^1.1.4",
+-        "isarray": "^1.0.0"
+-      }
+-    },
+     "node_modules/buffer-from": {
+       "version": "1.1.2",
+       "resolved": "https://registry.npmjs.org/buffer-from/-/buffer-from-1.1.2.tgz",
+@@ -7451,32 +6849,6 @@
+         "node": ">= 0.6"
+       }
+     },
+-    "node_modules/expo/node_modules/react-native-worklets": {
+-      "version": "0.8.1",
+-      "resolved": "https://registry.npmjs.org/react-native-worklets/-/react-native-worklets-0.8.1.tgz",
+-      "integrity": "sha512-oWP/lStsAHU6oYCaWDXrda/wOHVdhusQJz1e6x9gPnXdFf4ndNDAOtWCmk2zGrAnlapfyA3rM6PCQq94mPg9cw==",
+-      "extraneous": true,
+-      "license": "MIT",
+-      "dependencies": {
+-        "@babel/plugin-transform-arrow-functions": "^7.27.1",
+-        "@babel/plugin-transform-class-properties": "^7.27.1",
+-        "@babel/plugin-transform-classes": "^7.28.4",
+-        "@babel/plugin-transform-nullish-coalescing-operator": "^7.27.1",
+-        "@babel/plugin-transform-optional-chaining": "^7.27.1",
+-        "@babel/plugin-transform-shorthand-properties": "^7.27.1",
+-        "@babel/plugin-transform-template-literals": "^7.27.1",
+-        "@babel/plugin-transform-unicode-regex": "^7.27.1",
+-        "@babel/preset-typescript": "^7.27.1",
+-        "convert-source-map": "^2.0.0",
+-        "semver": "^7.7.3"
+-      },
+-      "peerDependencies": {
+-        "@babel/core": "*",
+-        "@react-native/metro-config": "*",
+-        "react": "*",
+-        "react-native": "0.81 - 0.85"
+-      }
+-    },
+     "node_modules/expo/node_modules/semver": {
+       "version": "7.7.4",
+       "resolved": "https://registry.npmjs.org/semver/-/semver-7.7.4.tgz",
+@@ -7575,7 +6947,7 @@
+       "version": "6.5.0",
+       "resolved": "https://registry.npmjs.org/fdir/-/fdir-6.5.0.tgz",
+       "integrity": "sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg==",
+-      "devOptional": true,
++      "dev": true,
+       "license": "MIT",
+       "engines": {
+         "node": ">=12.0.0"
+@@ -8231,26 +7603,6 @@
+       "integrity": "sha512-WDC/ui2VVRrz3jOVi+XtjqkDjiVjTtFaAGiW37k6b+ohyQ5wYDOGkvCZa8+H0nx3gyvv0+BST9xuOgIyGQ00gw==",
+       "license": "BSD-3-Clause"
+     },
+-    "node_modules/ieee754": {
+-      "version": "1.2.1",
+-      "resolved": "https://registry.npmjs.org/ieee754/-/ieee754-1.2.1.tgz",
+-      "integrity": "sha512-dcyqhDvX1C46lXZcVqCpK+FtMRQVdIMN6/Df5js2zouUsqG7I6sFxitIC+7KYK29KdXOLHdu9zL4sFnoVQnqaA==",
+-      "funding": [
+-        {
+-          "type": "github",
+-          "url": "https://github.com/sponsors/feross"
+-        },
+-        {
+-          "type": "patreon",
+-          "url": "https://www.patreon.com/feross"
+-        },
+-        {
+-          "type": "consulting",
+-          "url": "https://feross.org/support"
+-        }
+-      ],
+-      "license": "BSD-3-Clause"
+-    },
+     "node_modules/ignore": {
+       "version": "5.3.2",
+       "resolved": "https://registry.npmjs.org/ignore/-/ignore-5.3.2.tgz",
+@@ -8826,12 +8178,6 @@
+         "node": ">=8"
+       }
+     },
+-    "node_modules/isarray": {
+-      "version": "1.0.0",
+-      "resolved": "https://registry.npmjs.org/isarray/-/isarray-1.0.0.tgz",
+-      "integrity": "sha512-VLghIWNM6ELQzo7zwmcg0NmTVyWKYjvIeM83yjp0wRDTmUnrM678fQbcKBo6n2CJEF0szoG//ytg+TKla89ALQ==",
+-      "license": "MIT"
+-    },
+     "node_modules/isexe": {
+       "version": "2.0.0",
+       "resolved": "https://registry.npmjs.org/isexe/-/isexe-2.0.0.tgz",
+@@ -8838,16 +8184,6 @@
+       "integrity": "sha512-RHxMLp9lnKHGHRng9QFhRCMbYAcVpn69smSGcq3f36xjgVVWThj4qqLbTLlq7Ssj8B+fIQ1EuCEGI2lKsyQeIw==",
+       "license": "ISC"
+     },
+-    "node_modules/isomorphic-unfetch": {
+-      "version": "3.1.0",
+-      "resolved": "https://registry.npmjs.org/isomorphic-unfetch/-/isomorphic-unfetch-3.1.0.tgz",
+-      "integrity": "sha512-geDJjpoZ8N0kWexiwkX8F9NkTsXhetLPVbZFQ+JTW239QNOwvB0gniuR1Wc6f0AMTn7/mFGyXvHTifrCp/GH8Q==",
+-      "license": "MIT",
+-      "dependencies": {
+-        "node-fetch": "^2.6.1",
+-        "unfetch": "^4.2.0"
+-      }
+-    },
+     "node_modules/istanbul-lib-coverage": {
+       "version": "3.2.2",
+       "resolved": "https://registry.npmjs.org/istanbul-lib-coverage/-/istanbul-lib-coverage-3.2.2.tgz",
+@@ -9082,12 +8418,6 @@
+       "integrity": "sha512-dZ6Ra7u1G8c4Letq/B5EzAxj4tLFHL+cGtdpR+PVm4yzPDj+lCk+AbivWt1eOM+ikzkowtyV7qSqX6qr3t71Ww==",
+       "license": "MIT"
+     },
+-    "node_modules/js-cookie": {
+-      "version": "2.2.1",
+-      "resolved": "https://registry.npmjs.org/js-cookie/-/js-cookie-2.2.1.tgz",
+-      "integrity": "sha512-HvdH2LzI/EAZcUwA8+0nKNtWHqS+ZmijLA30RwZA0bo7ToCckjK5MkGhjED9KoRcXO6BaGI3I9UIzSA1FKFPOQ==",
+-      "license": "MIT"
+-    },
+     "node_modules/js-tokens": {
+       "version": "4.0.0",
+       "resolved": "https://registry.npmjs.org/js-tokens/-/js-tokens-4.0.0.tgz",
+@@ -12749,7 +12079,7 @@
+       "version": "0.2.16",
+       "resolved": "https://registry.npmjs.org/tinyglobby/-/tinyglobby-0.2.16.tgz",
+       "integrity": "sha512-pn99VhoACYR8nFHhxqix+uvsbXineAasWm5ojXoN8xEwK5Kd3/TrhNn1wByuD52UxWRLy8pu+kRMniEi6Eq9Zg==",
+-      "devOptional": true,
++      "dev": true,
+       "license": "MIT",
+       "dependencies": {
+         "fdir": "^6.5.0",
+@@ -12840,12 +12170,6 @@
+         "json5": "lib/cli.js"
+       }
+     },
+-    "node_modules/tslib": {
+-      "version": "1.14.1",
+-      "resolved": "https://registry.npmjs.org/tslib/-/tslib-1.14.1.tgz",
+-      "integrity": "sha512-Xni35NKzjgMrwevysHTCArtLDpPvye8zV/0E4EyYn43P7/7qvQwPh9BGkHewbMulVntbigmcT7rdX3BNo9wRJg==",
+-      "license": "0BSD"
+-    },
+     "node_modules/type-check": {
+       "version": "0.4.0",
+       "resolved": "https://registry.npmjs.org/type-check/-/type-check-0.4.0.tgz",
+@@ -13020,12 +12344,6 @@
+       "integrity": "sha512-qYVnV5OEm2AW8cJMCpdV20CDyaN3g0AjDlOGf1OW4iaDEx8MwdtChUp4zu4H0VP3nDRF/8RKWH+IPp9uW0YGZg==",
+       "license": "MIT"
+     },
+-    "node_modules/unfetch": {
+-      "version": "4.2.0",
+-      "resolved": "https://registry.npmjs.org/unfetch/-/unfetch-4.2.0.tgz",
+-      "integrity": "sha512-F9p7yYCn6cIW9El1zi0HI6vqpeIvBsr3dSuRO6Xuppb1u5rXpCPmMvLSyECLhybr9isec8Ohl0hPekMVrEinDA==",
+-      "license": "MIT"
+-    },
+     "node_modules/unicode-canonical-property-names-ecmascript": {
+       "version": "2.0.1",
+       "resolved": "https://registry.npmjs.org/unicode-canonical-property-names-ecmascript/-/unicode-canonical-property-names-ecmascript-2.0.1.tgz",
+diff --git a/expo-auction-frontend/package.json b/expo-auction-frontend/package.json
+--- a/expo-auction-frontend/package.json
++++ b/expo-auction-frontend/package.json
+@@ -14,7 +14,6 @@
+     "@expo/vector-icons": "^15.0.2",
+     "@react-navigation/native": "^7.1.6",
+     "@reduxjs/toolkit": "^2.11.2",
+-    "amazon-cognito-identity-js": "^6.3.16",
+     "expo": "^55.0.6",
+     "expo-constants": "~55.0.7",
+     "expo-font": "~55.0.4",
+diff --git a/expo-auction-frontend/services/cognitoAuth.ts b/expo-auction-frontend/services/cognitoAuth.ts
+--- a/expo-auction-frontend/services/cognitoAuth.ts
++++ b/expo-auction-frontend/services/cognitoAuth.ts
+@@ -1,4 +1,5 @@
+ export type SignUpResult = {
++  userConfirmed?: boolean;
+   userId?: string;
+   nextStep?: string;
+   message?: string;
+@@ -4,27 +5,112 @@
+   message?: string;
+ };
+ 
+-export async function signUpWithEmailPassword(email: string, password: string, displayName?: string): Promise<SignUpResult> {
++export type MockAuthTokens = {
++  accessToken: string;
++  idToken: string;
++  refreshToken: null;
++};
++
++type MockSession = MockAuthTokens & {
++  email: string;
++  username: string;
++  sub: string;
++};
++
++let currentSession: MockSession | null = null;
++
++function base64UrlEncode(value: string): string {
++  if (typeof globalThis.btoa !== 'function') {
++    throw new Error('This environment does not support demo auth token encoding.');
++  }
++
++  return globalThis.btoa(value).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
++}
++
++function emailToSub(email: string): string {
++  const normalized = email.trim().toLowerCase();
++  let hash = 0;
++  for (let index = 0; index < normalized.length; index += 1) {
++    hash = (hash * 31 + normalized.charCodeAt(index)) >>> 0;
++  }
++  return `demo-${hash.toString(16).padStart(8, '0')}`;
++}
++
++function usernameFromEmail(email: string): string {
++  const beforeAt = email.split('@')[0]?.trim();
++  return beforeAt || 'demo-user';
++}
++
++function createMockToken(email: string): string {
++  const normalized = email.trim().toLowerCase();
++  const username = usernameFromEmail(normalized);
++  const nowSeconds = Math.floor(Date.now() / 1000);
++
++  const header = base64UrlEncode(JSON.stringify({ alg: 'none', typ: 'JWT' }));
++  const payload = base64UrlEncode(
++    JSON.stringify({
++      sub: emailToSub(normalized),
++      email: normalized,
++      preferred_username: username,
++      iat: nowSeconds,
++      exp: nowSeconds + 60 * 60 * 12,
++    })
++  );
++
++  return `${header}.${payload}.demo`;
++}
++
++function buildSession(email: string): MockSession {
++  const normalized = email.trim().toLowerCase();
++  const token = createMockToken(normalized);
+   return {
+-    userId: email,
+-    nextStep: "DONE",
+-    message: "Mock signup successful",
++    email: normalized,
++    username: usernameFromEmail(normalized),
++    sub: emailToSub(normalized),
++    accessToken: token,
++    idToken: token,
++    refreshToken: null,
+   };
+ }
+ 
+-export async function confirmSignUp(email: string, code: string): Promise<void> {
++export async function signUpWithEmailPassword(
++  email: string,
++  password: string,
++  _displayName?: string
++): Promise<SignUpResult> {
++  if (!email.trim() || !password) {
++    throw new Error('Email and password are required.');
++  }
++
++  return {
++    userConfirmed: true,
++    userId: emailToSub(email),
++    nextStep: 'DONE',
++    message: 'Local demo account is ready.',
++  };
++}
++
++export async function confirmSignUp(_email: string, _code: string): Promise<void> {
+   return;
+ }
+ 
+-export async function resendSignUpCode(email: string): Promise<void> {
++export async function resendSignUpCode(_email: string): Promise<void> {
+   return;
+ }
+ 
+-export async function signInWithEmailPassword(email: string, password: string): Promise<any> {
++export async function signInWithEmailPassword(
++  email: string,
++  password: string
++): Promise<MockAuthTokens> {
++  if (!email.trim() || !password) {
++    throw new Error('Email and password are required.');
++  }
++
++  currentSession = buildSession(email);
+   return {
+-    email,
+-    accessToken: "mock-token",
+-    idToken: "mock-token",
++    accessToken: currentSession.accessToken,
++    idToken: currentSession.idToken,
++    refreshToken: currentSession.refreshToken,
+   };
+ }
+ 
+@@ -29,13 +115,22 @@
+ }
+ 
+ export async function signOut(): Promise<void> {
+-  return;
++  currentSession = null;
+ }
+ 
+-export async function getCurrentUser(): Promise<any> {
++export async function getCurrentUser(): Promise<{
++  email: string;
++  username: string;
++  sub: string;
++} | null> {
++  if (!currentSession) {
++    return null;
++  }
++
+   return {
+-    email: "demo@example.com",
+-    username: "demo",
++    email: currentSession.email,
++    username: currentSession.username,
++    sub: currentSession.sub,
+   };
+ }
+ 
+@@ -40,9 +135,15 @@
+ }
+ 
+ export async function getAccessToken(): Promise<string> {
+-  return "mock-token";
++  if (!currentSession) {
++    throw new Error('No active demo session.');
++  }
++  return currentSession.accessToken;
+ }
+ 
+ export async function getIdToken(): Promise<string> {
+-  return "mock-token";
++  if (!currentSession) {
++    throw new Error('No active demo session.');
++  }
++  return currentSession.idToken;
+ }
+diff --git a/expo-auction-frontend/services/cognitoConfig.ts b/expo-auction-frontend/services/cognitoConfig.ts
+deleted file mode 100644
+--- a/expo-auction-frontend/services/cognitoConfig.ts
++++ /dev/null
+@@ -1,26 +0,0 @@
+-import { CognitoUserPool } from 'amazon-cognito-identity-js';
+-
+-const region = process.env.EXPO_PUBLIC_COGNITO_REGION;
+-const userPoolId = process.env.EXPO_PUBLIC_COGNITO_USER_POOL_ID;
+-const clientId = process.env.EXPO_PUBLIC_COGNITO_CLIENT_ID;
+-
+-export function getCognitoPoolConfig(): {
+-  UserPoolId: string;
+-  ClientId: string;
+-} {
+-  if (!region || !userPoolId || !clientId) {
+-    throw new Error(
+-      'Missing Cognito env: EXPO_PUBLIC_COGNITO_REGION, EXPO_PUBLIC_COGNITO_USER_POOL_ID, EXPO_PUBLIC_COGNITO_CLIENT_ID'
+-    );
+-  }
+-  return { UserPoolId: userPoolId, ClientId: clientId };
+-}
+-
+-let pool: CognitoUserPool | null = null;
+-
+-export function getUserPool(): CognitoUserPool {
+-  if (!pool) {
+-    pool = new CognitoUserPool(getCognitoPoolConfig());
+-  }
+-  return pool;
+-}
+diff --git a/expo-auction-frontend/services/djangoApi.ts b/expo-auction-frontend/services/djangoApi.ts
+--- a/expo-auction-frontend/services/djangoApi.ts
++++ b/expo-auction-frontend/services/djangoApi.ts
+@@ -1,3 +1,5 @@
+ /** Django REST API base URL (no trailing slash). */
+-export const API_BASE_URL =
+-  process.env.EXPO_PUBLIC_DJANGO_API_URL?.replace(/\/$/, "") ?? "http://3.138.107.95:8000/api";
++export const DJANGO_API_BASE =
++  process.env.EXPO_PUBLIC_DJANGO_API_URL?.replace(/\/$/, '') ?? 'http://3.138.107.95:8000/api';
++
++export const API_BASE_URL = DJANGO_API_BASE;
+diff --git a/expo-auction-frontend/services/paymentsApi.ts b/expo-auction-frontend/services/paymentsApi.ts
+deleted file mode 100644
+--- a/expo-auction-frontend/services/paymentsApi.ts
++++ /dev/null
+@@ -1,50 +0,0 @@
+-import type { AuctionItem } from '@/constants/auctionItems';
+-import { DJANGO_API_BASE } from '@/services/djangoApi';
+-import { normalizeAuctionItem } from '@/state/slices/auctionItemsSlice';
+-import { authHeaders } from '@/state/slices/authSlice';
+-
+-export async function fetchAuctionItemById(id: number): Promise<AuctionItem | null> {
+-  const res = await fetch(`${DJANGO_API_BASE}/auctionItem/${id}/`);
+-  if (!res.ok) {
+-    return null;
+-  }
+-  const data = (await res.json()) as unknown;
+-  return normalizeAuctionItem(data);
+-}
+-
+-export type CreateCheckoutSessionParams = {
+-  auctionItemId: number;
+-  customerEmail?: string;
+-  accessToken: string | null;
+-};
+-
+-export async function createCheckoutSession({
+-  auctionItemId,
+-  customerEmail,
+-  accessToken,
+-}: CreateCheckoutSessionParams): Promise<{ checkout_url: string }> {
+-  const headers: Record<string, string> = {
+-    'Content-Type': 'application/json',
+-    ...(accessToken ? authHeaders(accessToken) : {}),
+-  };
+-  const body: Record<string, unknown> = { auction_item_id: auctionItemId };
+-  const trimmed = customerEmail?.trim();
+-  if (trimmed) {
+-    body.customer_email = trimmed;
+-  }
+-
+-  const res = await fetch(`${DJANGO_API_BASE}/payments/create-checkout-session/`, {
+-    method: 'POST',
+-    headers,
+-    body: JSON.stringify(body),
+-  });
+-  if (!res.ok) {
+-    const text = await res.text();
+-    throw new Error(text || `HTTP ${res.status}`);
+-  }
+-  const data = (await res.json()) as { checkout_url?: unknown };
+-  if (typeof data.checkout_url !== 'string' || !data.checkout_url) {
+-    throw new Error('Invalid checkout response from server.');
+-  }
+-  return { checkout_url: data.checkout_url };
+-}
+diff --git a/expo-auction-frontend/state/slices/auctionItemsSlice.ts b/expo-auction-frontend/state/slices/auctionItemsSlice.ts
+--- a/expo-auction-frontend/state/slices/auctionItemsSlice.ts
++++ b/expo-auction-frontend/state/slices/auctionItemsSlice.ts
+@@ -1,6 +1,5 @@
+-import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
++import { createAsyncThunk, createSlice } from '@reduxjs/toolkit';
+ 
+-import { MOCK_AUCTION_ITEMS } from '@/constants/auctionItems';
+ import type { AuctionItem } from '@/constants/auctionItems';
+ import { DJANGO_API_BASE } from '@/services/djangoApi';
+ import { authHeaders } from '@/state/slices/authSlice';
+@@ -14,7 +13,7 @@
+ };
+ 
+ const initialState: AuctionItemsState = {
+-  items: MOCK_AUCTION_ITEMS,
++  items: [],
+   loading: false,
+   error: null,
+   generateDescriptionLoading: false,
+@@ -30,8 +29,8 @@
+ function toNumber(value: unknown): number | null {
+   if (typeof value === 'number' && Number.isFinite(value)) return value;
+   if (typeof value === 'string' && value.trim() !== '') {
+-    const n = Number(value);
+-    return Number.isFinite(n) ? n : null;
++    const parsed = Number(value);
++    return Number.isFinite(parsed) ? parsed : null;
+   }
+   return null;
+ }
+@@ -36,21 +35,36 @@
+   return null;
+ }
+ 
+-/** Normalize a Django auction item payload (exported for single-item fetch helpers). */
++async function readErrorMessage(res: Response): Promise<string> {
++  const text = await res.text();
++
++  try {
++    const data = JSON.parse(text) as { detail?: unknown };
++    if (typeof data.detail === 'string' && data.detail.trim()) {
++      return data.detail;
++    }
++  } catch {
++    // Fall through to plain text handling.
++  }
++
++  return text || `HTTP ${res.status}`;
++}
++
+ export function normalizeAuctionItem(raw: unknown): AuctionItem | null {
+   if (!raw || typeof raw !== 'object') return null;
++
+   const item = raw as Record<string, unknown>;
++  const startingPrice = toNumber(item.starting_price);
++  const currentPrice = toNumber(item.current_price);
+ 
+-  const starting = toNumber(item.starting_price);
+-  const current = toNumber(item.current_price);
++  if (startingPrice === null || currentPrice === null) {
++    return null;
++  }
+ 
+-  // We only coerce the numeric fields that Django may serialize as strings (Decimal).
+-  if (starting === null || current === null) return null;
+-
+   return {
+     ...(item as AuctionItem),
+-    starting_price: starting,
+-    current_price: current,
++    starting_price: startingPrice,
++    current_price: currentPrice,
+   };
+ }
+ 
+@@ -60,9 +74,9 @@
+     try {
+       const res = await fetch(`${API_BASE}/auctionItem/`);
+       if (!res.ok) {
+-        const text = await res.text();
+-        return rejectWithValue(text || `HTTP ${res.status}`);
++        return rejectWithValue(await readErrorMessage(res));
+       }
++
+       const data = (await res.json()) as unknown;
+       if (!Array.isArray(data)) {
+         return rejectWithValue('Invalid items response from API.');
+@@ -67,14 +81,14 @@
+       if (!Array.isArray(data)) {
+         return rejectWithValue('Invalid items response from API.');
+       }
+-      const normalized: AuctionItem[] = [];
+-      for (const row of data) {
+-        const item = normalizeAuctionItem(row);
+-        if (item) normalized.push(item);
+-      }
++
++      const normalized = data
++        .map((row) => normalizeAuctionItem(row))
++        .filter((row): row is AuctionItem => row !== null);
++
+       return normalized;
+-    } catch (e) {
+-      const message = e instanceof Error ? e.message : 'Failed to fetch items';
++    } catch (error) {
++      const message = error instanceof Error ? error.message : 'Failed to fetch items';
+       return rejectWithValue(message);
+     }
+   }
+@@ -99,6 +113,7 @@
+     if (!token) {
+       return rejectWithValue('You must be signed in to add an item.');
+     }
++
+     const res = await fetch(`${API_BASE}/auctionItem/`, {
+       method: 'POST',
+       headers: {
+@@ -111,10 +126,11 @@
+         image_url: payload.image_url ?? null,
+       }),
+     });
++
+     if (!res.ok) {
+-      const text = await res.text();
+-      return rejectWithValue(text || `HTTP ${res.status}`);
++      return rejectWithValue(await readErrorMessage(res));
+     }
++
+     const data = (await res.json()) as unknown;
+     const item = normalizeAuctionItem(data);
+     if (!item) {
+@@ -120,9 +136,10 @@
+     if (!item) {
+       return rejectWithValue('Invalid item response from API.');
+     }
++
+     return item;
+-  } catch (e) {
+-    const message = e instanceof Error ? e.message : 'Failed to create item';
++  } catch (error) {
++    const message = error instanceof Error ? error.message : 'Failed to create item';
+     return rejectWithValue(message);
+   }
+ });
+@@ -139,6 +156,7 @@
+       if (!token) {
+         return rejectWithValue('You must be signed in to generate a description.');
+       }
++
+       const res = await fetch(`${API_BASE}/ai/generate-item-description/`, {
+         method: 'POST',
+         headers: {
+@@ -147,10 +165,11 @@
+         },
+         body: JSON.stringify({ name }),
+       });
++
+       if (!res.ok) {
+-        const text = await res.text();
+-        return rejectWithValue(text || `HTTP ${res.status}`);
++        return rejectWithValue(await readErrorMessage(res));
+       }
++
+       const data = (await res.json()) as { description?: unknown };
+       if (typeof data.description !== 'string' || !data.description.trim()) {
+         return rejectWithValue('API returned no description.');
+@@ -155,9 +174,10 @@
+       if (typeof data.description !== 'string' || !data.description.trim()) {
+         return rejectWithValue('API returned no description.');
+       }
++
+       return { description: data.description };
+-    } catch (e) {
+-      const message = e instanceof Error ? e.message : 'Failed to generate description';
++    } catch (error) {
++      const message = error instanceof Error ? error.message : 'Failed to generate description';
+       return rejectWithValue(message);
+     }
+   }
+@@ -183,7 +203,6 @@
+     },
+   },
+   extraReducers: (builder) => {
+-    // fetchAuctionItems
+     builder
+       .addCase(fetchAuctionItems.pending, (state) => {
+         state.loading = true;
+@@ -197,10 +216,7 @@
+       .addCase(fetchAuctionItems.rejected, (state, action) => {
+         state.loading = false;
+         state.error = action.payload ?? 'Failed to fetch items';
+-      });
+-
+-    // createAuctionItem
+-    builder
++      })
+       .addCase(createAuctionItem.pending, (state) => {
+         state.loading = true;
+         state.error = null;
+@@ -213,10 +229,7 @@
+       .addCase(createAuctionItem.rejected, (state, action) => {
+         state.loading = false;
+         state.error = action.payload ?? 'Failed to create item';
+-      });
+-
+-    // generateAuctionItemDescription
+-    builder
++      })
+       .addCase(generateAuctionItemDescription.pending, (state) => {
+         state.generateDescriptionLoading = true;
+         state.generateDescriptionError = null;
+@@ -257,7 +270,6 @@
+   auctionItems: AuctionItemsState;
+ }): string | null => state.auctionItems.generateDescriptionError;
+ 
+-/** Select auction items whose auction_event matches the given event id. */
+ export const selectAuctionItemsByEventId =
+   (eventId: number) =>
+   (state: { auctionItems: AuctionItemsState }): AuctionItem[] =>
+@@ -273,7 +285,6 @@
+   auctionItems: AuctionItemsState;
+ };
+ 
+-/** True if the signed-in user's Cognito `sub` matches the item's `owner_sub`. */
+ export const selectIsAuctionItemOwner =
+   (item: AuctionItem) =>
+   (state: RootWithAuthItems): boolean => {
+@@ -281,7 +292,6 @@
+     return !!sub && item.owner_sub === sub;
+   };
+ 
+-/** Items for an event that belong to the current user (by `owner_sub`). */
+ export const selectMyAuctionItemsByEventId =
+   (eventId: number) =>
+   (state: RootWithAuthItems): AuctionItem[] => {
+@@ -287,6 +297,7 @@
+   (state: RootWithAuthItems): AuctionItem[] => {
+     const sub = state.auth.user?.sub;
+     if (!sub) return [];
++
+     return state.auctionItems.items.filter(
+       (item) => item.auction_event === eventId && item.owner_sub === sub
+     );
+diff --git a/expo-auction-frontend/state/slices/authSlice.ts b/expo-auction-frontend/state/slices/authSlice.ts
+--- a/expo-auction-frontend/state/slices/authSlice.ts
++++ b/expo-auction-frontend/state/slices/authSlice.ts
+@@ -19,8 +19,10 @@
+ 
+ function userFromTokenClaims(payload: Record<string, unknown> | null): AuthUser | null {
+   if (!payload || typeof payload.sub !== 'string') return null;
++
+   const cognitoUsername = payload['cognito:username'];
+   const preferred = payload.preferred_username;
++
+   return {
+     sub: payload.sub,
+     email: typeof payload.email === 'string' ? payload.email : null,
+@@ -32,13 +34,15 @@
+ 
+ function deriveUser(idToken: string | null, accessToken: string | null): AuthUser | null {
+   if (idToken) {
+-    const u = userFromTokenClaims(decodeJwtPayload(idToken));
+-    if (u) return u;
++    const user = userFromTokenClaims(decodeJwtPayload(idToken));
++    if (user) return user;
+   }
++
+   if (accessToken) {
+-    const u = userFromTokenClaims(decodeJwtPayload(accessToken));
+-    if (u) return u;
++    const user = userFromTokenClaims(decodeJwtPayload(accessToken));
++    if (user) return user;
+   }
++
+   return null;
+ }
+ 
+@@ -84,6 +88,7 @@
+         state.status = 'loading';
+         return;
+       }
++
+       state.status = state.user && state.accessToken ? 'authenticated' : 'unauthenticated';
+     },
+     setAuthError: (state, action: PayloadAction<string | null>) => {
+@@ -95,21 +100,17 @@
+   },
+ });
+ 
+-export const { setCredentials, clearSession, setAuthLoading, setAuthError } =
+-  authSlice.actions;
++export const { setCredentials, clearSession, setAuthLoading, setAuthError } = authSlice.actions;
+ 
+ export const selectAuth = (state: { auth: AuthState }): AuthState => state.auth;
+-export const selectCurrentUser = (state: { auth: AuthState }): AuthUser | null =>
+-  state.auth.user;
++export const selectCurrentUser = (state: { auth: AuthState }): AuthUser | null => state.auth.user;
+ export const selectAccessToken = (state: { auth: AuthState }): string | null =>
+   state.auth.accessToken;
+ export const selectIsAuthenticated = (state: { auth: AuthState }): boolean =>
+-  state.auth.status === 'authenticated' &&
+-  !!state.auth.accessToken &&
+-  !!state.auth.user?.sub;
++  state.auth.status === 'authenticated' && !!state.auth.accessToken && !!state.auth.user?.sub;
+ 
+ /**
+- * Human-readable label for a Cognito `sub` when listing events/items.
++ * Human-readable label for a user `sub` when listing events/items.
+  * Prefer server-provided display strings when the API adds them (`*_display_name`).
+  */
+ export function displayNameForSub(
+@@ -118,9 +119,11 @@
+   serverDisplayName?: string | null
+ ): string {
+   if (serverDisplayName?.trim()) return serverDisplayName.trim();
++
+   if (currentUser?.sub === sub) {
+     return currentUser.email ?? currentUser.username ?? shortenSub(sub);
+   }
++
+   return shortenSub(sub);
+ }
+ 
+@@ -126,7 +129,7 @@
+ 
+ function shortenSub(sub: string): string {
+   if (sub.length <= 14) return sub;
+-  return `${sub.slice(0, 8)}…${sub.slice(-4)}`;
++  return `${sub.slice(0, 8)}...${sub.slice(-4)}`;
+ }
+ 
+ export function authHeaders(accessToken: string | null): Record<string, string> {
+diff --git a/expo-auction-frontend/state/slices/eventsSlice.ts b/expo-auction-frontend/state/slices/eventsSlice.ts
+--- a/expo-auction-frontend/state/slices/eventsSlice.ts
++++ b/expo-auction-frontend/state/slices/eventsSlice.ts
+@@ -1,4 +1,4 @@
+-import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
++import { createAsyncThunk, createSlice } from '@reduxjs/toolkit';
+ 
+ import type { AuctionEvent } from '@/constants/events';
+ import { DJANGO_API_BASE } from '@/services/djangoApi';
+@@ -18,7 +18,6 @@
+   error: null,
+ };
+ 
+-/** Payload for creating an event (POST). `created_by_sub` is set by Django from the JWT. */
+ export type CreateEventPayload = {
+   name: string;
+   city: string;
+@@ -33,11 +32,22 @@
+   auth: { accessToken: string | null };
+ };
+ 
+-export const fetchEvents = createAsyncThunk<
+-  AuctionEvent[],
+-  void,
+-  { rejectValue: string }
+->(
++async function readErrorMessage(res: Response): Promise<string> {
++  const text = await res.text();
++
++  try {
++    const data = JSON.parse(text) as { detail?: unknown };
++    if (typeof data.detail === 'string' && data.detail.trim()) {
++      return data.detail;
++    }
++  } catch {
++    // Fall through to plain text handling.
++  }
++
++  return text || `HTTP ${res.status}`;
++}
++
++export const fetchEvents = createAsyncThunk<AuctionEvent[], void, { rejectValue: string }>(
+   'events/fetchEvents',
+   async (_, { rejectWithValue }) => {
+     try {
+@@ -43,14 +53,13 @@
+     try {
+       const res = await fetch(`${API_BASE}/auctionEvent/`);
+       if (!res.ok) {
+-        const text = await res.text();
+-        return rejectWithValue(text || `HTTP ${res.status}`);
++        return rejectWithValue(await readErrorMessage(res));
+       }
++
+       const data = await res.json();
+       return data as AuctionEvent[];
+-    } catch (e) {
+-      const message = e instanceof Error ? e.message : 'Failed to fetch events';
+-      console.error(message);
++    } catch (error) {
++      const message = error instanceof Error ? error.message : 'Failed to fetch events';
+       return rejectWithValue(message);
+     }
+   }
+@@ -60,37 +69,36 @@
+   AuctionEvent,
+   CreateEventPayload,
+   { rejectValue: string; state: RootWithAuth }
+->(
+-  'events/createEvent',
+-  async (payload, { rejectWithValue, getState }) => {
+-    try {
+-      const token = getState().auth.accessToken;
+-      if (!token) {
+-        return rejectWithValue('You must be signed in to create an event.');
+-      }
+-      const res = await fetch(`${API_BASE}/auctionEvent/`, {
+-        method: 'POST',
+-        headers: {
+-          'Content-Type': 'application/json',
+-          ...authHeaders(token),
+-        },
+-        body: JSON.stringify({
+-          ...payload,
+-          is_active: payload.is_active ?? true,
+-        }),
+-      });
+-      if (!res.ok) {
+-        const text = await res.text();
+-        return rejectWithValue(text || `HTTP ${res.status}`);
+-      }
+-      const data = await res.json();
+-      return data as AuctionEvent;
+-    } catch (e) {
+-      const message = e instanceof Error ? e.message : 'Failed to create event';
+-      return rejectWithValue(message);
++>('events/createEvent', async (payload, { rejectWithValue, getState }) => {
++  try {
++    const token = getState().auth.accessToken;
++    if (!token) {
++      return rejectWithValue('You must be signed in to create an event.');
+     }
++
++    const res = await fetch(`${API_BASE}/auctionEvent/`, {
++      method: 'POST',
++      headers: {
++        'Content-Type': 'application/json',
++        ...authHeaders(token),
++      },
++      body: JSON.stringify({
++        ...payload,
++        is_active: payload.is_active ?? true,
++      }),
++    });
++
++    if (!res.ok) {
++      return rejectWithValue(await readErrorMessage(res));
++    }
++
++    const data = await res.json();
++    return data as AuctionEvent;
++  } catch (error) {
++    const message = error instanceof Error ? error.message : 'Failed to create event';
++    return rejectWithValue(message);
+   }
+-);
++});
+ 
+ const eventsSlice = createSlice({
+   name: 'events',
+@@ -109,7 +117,6 @@
+     },
+   },
+   extraReducers: (builder) => {
+-    // fetchEvents
+     builder
+       .addCase(fetchEvents.pending, (state) => {
+         state.loading = true;
+@@ -123,9 +130,7 @@
+       .addCase(fetchEvents.rejected, (state, action) => {
+         state.loading = false;
+         state.error = action.payload ?? 'Failed to fetch events';
+-      });
+-    // createEvent
+-    builder
++      })
+       .addCase(createEvent.pending, (state) => {
+         state.loading = true;
+         state.error = null;
+@@ -144,15 +149,12 @@
+ 
+ export const { setEvents, addEvent, clearEventsError } = eventsSlice.actions;
+ 
+-export const selectEvents = (state: { events: EventsState }): AuctionEvent[] =>
+-  state.events.items;
++export const selectEvents = (state: { events: EventsState }): AuctionEvent[] => state.events.items;
+ 
+-export const selectEventsLoading = (state: {
+-  events: EventsState;
+-}): boolean => state.events.loading;
++export const selectEventsLoading = (state: { events: EventsState }): boolean =>
++  state.events.loading;
+ 
+-export const selectEventsError = (state: {
+-  events: EventsState;
+-}): string | null => state.events.error;
++export const selectEventsError = (state: { events: EventsState }): string | null =>
++  state.events.error;
+ 
+ export default eventsSlice.reducer;
+diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -1,1 +1,54 @@
+-# data5570-spring-2026
+\ No newline at end of file
++# finalprojapp
++
++Simple full-stack auction demo for a solo class project.
++
++## What changed
++
++- Cognito is fully bypassed for the demo. Sign in and sign up now use local mock auth.
++- The frontend API base URL is set to `http://3.138.107.95:8000/api`.
++- Django CORS is configured for the Expo web app on port `8081`.
++- Events and items load from Django instead of frontend mock data.
++- Event and item creation now use the Django API and persist in SQLite.
++- If the database is empty, the backend auto-seeds sample events and items.
++- Stripe is not required for the demo flow.
++
++## Backend
++
++```bash
++cd /home/ubuntu/finalprojapp/djangobackend
++source ~/venv/bin/activate
++pip install -r requirements.txt
++python manage.py migrate
++python manage.py runserver 0.0.0.0:8000
++```
++
++## Frontend
++
++Create `expo-auction-frontend/.env` with:
++
++```bash
++EXPO_PUBLIC_DJANGO_API_URL=http://3.138.107.95:8000/api
++```
++
++Then run:
++
++```bash
++cd /home/ubuntu/finalprojapp/expo-auction-frontend
++npm install
++npx expo start --web --clear
++```
++
++## Open in Browser
++
++- Frontend: `http://3.138.107.95:8081`
++- Backend API: `http://3.138.107.95:8000/api`
++
++## Demo flow
++
++1. Open the frontend.
++2. Sign in with any email and password.
++3. View the seeded events list.
++4. Click `Add` to create a new event.
++5. Open an event to view its items.
++6. Click `Add` to create a new item.
++7. Refresh the page and confirm the new event and item still exist in SQLite.
