@@ -1,3 +1,5 @@
+let currentSession: any = null;
+
 export type SignUpResult = {
   userConfirmed?: boolean;
   userId?: string;

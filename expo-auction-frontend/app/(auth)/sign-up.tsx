@@ -10,6 +10,7 @@ import {
   View,
 } from 'react-native';
 
+import { confirmSignUp } from '@/services/cognitoAuth';
 import { Button } from '@/components/Button';
 import { Container } from '@/components/Container';
 import { signInWithEmailPassword, signUpWithEmailPassword } from '@/services/cognitoAuth';
@@ -25,6 +26,10 @@ function cognitoMessage(err: unknown): string {
 }
 
 export default function SignUpScreen() {
+  const [info, setInfo] = useState<string | null>(null);
+  const [awaitingVerification, setAwaitingVerification] = useState(false);
+  const [verificationCode, setVerificationCode] = useState('');
+
   const router = useRouter();
   const dispatch = useAppDispatch();
 
@@ -200,14 +205,12 @@ export default function SignUpScreen() {
                   keyboardType="number-pad"
                   editable={!loading}
                 />
-                <Pressable onPress={handleResend} disabled={loading} style={styles.secondaryBtn}>
-                  <Text style={styles.secondaryBtnText}>Resend code</Text>
-                </Pressable>
+                
               </>
             )}
 
             {error ? <Text style={styles.error}>{error}</Text> : null}
-            {info ? <Text style={styles.info}>{info}</Text> : null}
+            
 
             {loading ? (
               <ActivityIndicator style={styles.spinner} />

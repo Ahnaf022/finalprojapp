@@ -1,6 +1,15 @@
+async function readErrorMessage(res: Response): Promise<string> {
+  try {
+    const data = await res.json();
+    return data?.detail || data?.error || data?.message || 'Request failed';
+  } catch {
+    return 'Request failed';
+  }
+}
+
 import { createAsyncThunk, createSlice } from '@reduxjs/toolkit';
 
-import type { AuctionEvent } from '@/constants/events';
+import type { AuctionEvent } from '@/constants/auctionEvent';
 import { DJANGO_API_BASE } from '@/services/djangoApi';
 import { authHeaders } from '@/state/slices/authSlice';
 
@@ -32,23 +41,10 @@ type RootWithAuth = {
   auth: { accessToken: string | null };
 };
 
-async function readErrorMessage(res: Response): Promise<string> {
-  const text = await res.text();
 
-  try {
-    const data = JSON.parse(text) as { detail?: unknown };
-    if (typeof data.detail === 'string' && data.detail.trim()) {
-      return data.detail;
-    }
-  } catch {
-    // Fall through to plain text handling.
-  }
-
-  return text || `HTTP ${res.status}`;
-}
 
 export const fetchEvents = createAsyncThunk<AuctionEvent[], void, { rejectValue: string }>(
-  'events/fetchEvents',
+  'auctionEvent/fetchEvents',
   async (_, { rejectWithValue }) => {
     try {
       const res = await fetch(`${API_BASE}/auctionEvent/`);
@@ -70,7 +66,7 @@ export const createEvent = createAsyncThunk<
   AuctionEvent,
   CreateEventPayload,
   { rejectValue: string; state: RootWithAuth }
->('events/createEvent', async (payload, { rejectWithValue, getState }) => {
+>('auctionEvent/createEvent', async (payload, { rejectWithValue, getState }) => {
   try {
     const token = getState().auth.accessToken;
     if (!token) {

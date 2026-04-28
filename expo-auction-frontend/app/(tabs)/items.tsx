@@ -1,5 +1,8 @@
+
+import { useRouter } from 'expo-router';
 import { useEffect } from 'react';
 import { ScrollView, StyleSheet, View } from 'react-native';
+import { Pressable } from 'react-native';
 import { ActivityIndicator, Card, Text, useTheme } from 'react-native-paper';
 
 import { useAppDispatch, useAppSelector } from '@/state/hooks';
@@ -11,6 +14,8 @@ import {
 } from '@/state/slices/auctionItemsSlice';
 
 export default function ItemsScreen() {
+  const router = useRouter();
+
   const dispatch = useAppDispatch();
   const theme = useTheme();
 
@@ -51,18 +56,18 @@ export default function ItemsScreen() {
                 {item.description}
               </Text>
               {item.status === 'published' ? (
-                <Button
-                  mode="contained"
-                  compact
-                  style={styles.buy}
+                <Pressable
+                  
+                  
+                  style={styles.content}
                   onPress={() =>
                     router.push({
-                      pathname: '/(tabs)/itemCheckout/[itemId]',
+                      pathname: '/itemCheckout/[itemId]' as any,
                       params: { itemId: String(item.id) },
                     })
                   }>
                   Buy
-                </Button>
+                </Pressable>
               ) : null}
             </Card.Content>
           </Card>

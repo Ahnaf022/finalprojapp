@@ -1,0 +1,20 @@
+export type AuctionEvent = {
+  id: string | number;
+  name?: string;
+  title?: string;
+  city?: string;
+  state?: string;
+  zip_code?: string;
+  location?: string;
+  start_datetime?: string;
+  end_datetime?: string;
+  starts_at?: string;
+  ends_at?: string;
+  is_active?: boolean;
+  status?: string;
+  created_by_sub?: string;
+  created_by_display_name?: string;
+  organizer?: string;
+  created_at?: string;
+  updated_at?: string;
+};

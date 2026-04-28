@@ -1,3 +1,10 @@
+function readErrorMessage(error: unknown): string {
+  if (!error) return "";
+  if (typeof error === "string") return error;
+  if (error instanceof Error) return error.message;
+  return "Unable to load data.";
+}
+
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
@@ -82,8 +89,8 @@ export default function AddItemScreen() {
     setNameError(null);
     void dispatch(generateAuctionItemDescription({ name: trimmed }))
       .unwrap()
-      .then(({ description: d }) => {
-        setDescription(d);
+      .then(({ description: d }: any) => {
+        setDescription(d || '');
       })
       .catch((message: string) => {
         Alert.alert('Could not generate description', message);
@@ -125,7 +132,7 @@ export default function AddItemScreen() {
       createAuctionItem({
         auction_event: eventIdNumber,
         name: trimmedName,
-        description: description.trim() || 'Condition not specified.',
+        description: (description || '').trim() || 'Condition not specified.',
         starting_price: starting,
         status: 'published',
       })

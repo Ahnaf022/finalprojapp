@@ -21,3 +21,9 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/', include('auctions.urls')),
 ]
+from django.http import HttpResponseRedirect
+
+urlpatterns += [
+    path('api/items/', lambda request: HttpResponseRedirect('/api/auctionItem/')),
+    path('api/events/', lambda request: HttpResponseRedirect('/api/auctionEvent/')),
+]

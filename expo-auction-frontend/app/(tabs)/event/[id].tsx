@@ -7,7 +7,26 @@ import type { AuctionItem } from '@/constants/auctionItems';
 import type { AuctionEvent } from '@/constants/events';
 import { useAppDispatch, useAppSelector } from '@/state/hooks';
 import { displayNameForSub, selectCurrentUser } from '@/state/slices/authSlice';
-import { fetchAuctionItems, selectAuctionItemsByEventId } from '@/state/slices/auctionItemsSlice';
+import {
+  fetchEvents,
+  selectEvents,
+  selectEventsLoading,
+  selectEventsError,
+} from '@/state/slices/eventsSlice';
+import {
+  fetchAuctionItems,
+  selectAuctionItemsByEventId,
+  selectAuctionItems,
+  selectAuctionItemsLoading,
+  selectAuctionItemsError,
+} from '@/state/slices/auctionItemsSlice';
+
+function readErrorMessage(error: unknown): string {
+  if (!error) return "";
+  if (typeof error === "string") return error;
+  if (error instanceof Error) return error.message;
+  return "Unable to load data.";
+}
 
 function formatDateTime(iso: string) {
   return new Date(iso).toLocaleString(undefined, {
@@ -61,7 +80,7 @@ export default function EventItemScreen() {
   }, [eventJson]);
 
   const storeEvent =
-    eventId === null ? null : (events.find((candidate) => candidate.id === eventId) ?? null);
+    eventId === null ? null : (events.find((candidate) => String(candidate.id) === String(eventId)) ?? null);
   const event = routeEvent ?? storeEvent;
 
   const itemsForEvent = useAppSelector(selectAuctionItemsByEventId(eventId ?? routeEvent?.id ?? 0));
@@ -108,11 +127,11 @@ export default function EventItemScreen() {
 
       <View style={styles.section}>
         <Text style={styles.label}>Starts</Text>
-        <Text style={styles.value}>{formatDateTime(event.start_datetime)}</Text>
+        <Text style={styles.value}>{formatDateTime(event.start_datetime ?? '')}</Text>
       </View>
       <View style={styles.section}>
         <Text style={styles.label}>Ends</Text>
-        <Text style={styles.value}>{formatDateTime(event.end_datetime)}</Text>
+        <Text style={styles.value}>{formatDateTime(event.end_datetime ?? '')}</Text>
       </View>
 
       <View style={styles.section}>
@@ -122,17 +141,17 @@ export default function EventItemScreen() {
       <View style={styles.section}>
         <Text style={styles.label}>Organizer</Text>
         <Text style={styles.value}>
-          {displayNameForSub(event.created_by_sub, currentUser, event.created_by_display_name)}
+          {displayNameForSub(event.created_by_sub ?? '', currentUser, event.created_by_display_name)}
         </Text>
       </View>
 
       <View style={styles.section}>
         <Text style={styles.label}>Created</Text>
-        <Text style={styles.value}>{formatDateTime(event.created_at)}</Text>
+        <Text style={styles.value}>{formatDateTime(event.created_at ?? '')}</Text>
       </View>
       <View style={styles.section}>
         <Text style={styles.label}>Updated</Text>
-        <Text style={styles.value}>{formatDateTime(event.updated_at)}</Text>
+        <Text style={styles.value}>{formatDateTime(event.updated_at ?? '')}</Text>
       </View>
 
       <View style={styles.section}>
@@ -164,7 +183,7 @@ export default function EventItemScreen() {
           itemsForEvent.map((item) => (
             <ItemCard
               key={item.id}
-              item={item}
+              item={item as any}
               ownerLabel={displayNameForSub(item.owner_sub, currentUser, item.owner_display_name)}
             />
           ))

@@ -120,11 +120,11 @@ export function displayNameForSub(
 ): string {
   if (serverDisplayName?.trim()) return serverDisplayName.trim();
 
-  if (currentUser?.sub === sub) {
-    return currentUser.email ?? currentUser.username ?? shortenSub(sub);
+  if (sub && currentUser && currentUser.sub === sub) {
+    return currentUser?.email ?? currentUser?.username ?? shortenSub(sub || 'demo');
   }
 
-  return shortenSub(sub);
+  return shortenSub(sub || 'demo');
 }
 
 function shortenSub(sub: string): string {
